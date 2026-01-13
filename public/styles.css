@@ -1,0 +1,37 @@
+:root{
+  --gap: 12px;
+  --panel-width: 220px;
+}
+*{box-sizing:border-box}
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;line-height:1.4;margin:0;padding:20px;color:#111}
+header{margin-bottom:16px;display:flex;flex-direction:column;gap:8px}
+.reset-btn{padding:6px 12px;background:#ef4444;color:white;border:none;border-radius:6px;cursor:pointer;font-size:14px;font-weight:500;align-self:flex-start}
+.reset-btn:hover{background:#dc2626}
+.reset-btn:active{background:#b91c1c}
+.app{display:flex;gap:var(--gap)}
+main{flex:1;min-height:60vh}
+.wordbank{width:var(--panel-width);border-left:1px solid #eee;padding-left:12px}
+.words{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.word-item{background:#f1f5f9;border:1px solid #dbe7f0;padding:8px 10px;border-radius:6px;cursor:grab;user-select:none}
+.word-item:active{cursor:grabbing}
+.word-item.selected{outline:3px solid #0ea5a4;outline-offset:2px;background:#dcfdf3}
+/* Style for words locked by other users */
+.word-item.locked{opacity:0.6;cursor:not-allowed;background:#e5e7eb;filter:grayscale(1)}
+
+.message{display:none;padding:8px 10px;border-radius:6px;margin:10px 0;font-weight:600}
+.message.show{display:block;background:#fff7ed;border:1px solid #f59e0b;color:#92400e}
+.sentence{margin-bottom:18px;font-size:18px}
+.token{margin-right:6px}
+.blank{display:inline-block;min-width:100px;height:30px;border:2px dashed #666;border-radius:6px;vertical-align:middle;margin-right:6px;padding:4px 8px;background:white}
+.blank.dragover{background:#fef3c7;border-color:#f59e0b}
+.blank.filled{border-style:solid;background:#e6ffed}
+.blank.incorrect{background:#ffe6e6;border-color:#d66}
+.hint{color:#666;font-size:13px}
+
+.wordbank h2{margin:0 0 6px 0;font-size:16px}
+
+/* responsive */
+@media (max-width:720px){
+  .app{flex-direction:column}
+  .wordbank{width:auto;border-left:0;padding-left:0}
+}

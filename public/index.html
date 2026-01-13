@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Drag & Drop Blanks — Idol Tool</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1 id="app-title">Fill the blanks</h1>
+      <p id="app-instructions">Drag words from the side panel into the rectangular blanks.</p>
+      <button id="resetBtn" class="reset-btn">Reset Exercise</button>
+    </header>
+
+    <div id="message" class="message" aria-live="polite"></div>
+
+    <div class="app">
+      <main id="sentences"></main>
+
+      <aside id="wordbank" class="wordbank">
+        <h2>Words</h2>
+        <div id="words" class="words"></div>
+      </aside>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/client.js"></script>
+  </body>
+</html>
