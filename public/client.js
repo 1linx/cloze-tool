@@ -98,26 +98,33 @@
     const sentences = wsState.sentences || [];
     const pool = wsState.pool || [];
     const blanks = wsState.blanks || {};
+    let blankCount = 0;
 
     for(let si = 0; si < sentences.length; si++){
       const s = sentences[si];
       for(let ti = 0; ti < s.tokens.length; ti++){
-        if(s.tokens[ti] === null){
+        if(s.tokens[ti] === null){ // It's a blank
+          blankCount++;
           const blankPos = `${si}-${ti}`;
           const wordId = blanks[blankPos];
           if(!wordId) return false; // Blank not filled
 
-          const word = pool.find(w => w.id === wordId);
-          if(!word) return false; // Word not found
+          const placedWord = pool.find(w => w.id === wordId);
+          if(!placedWord) return false; // Should not happen
 
-          // Check if word is in correct position
-          if(word.sentenceIndex !== si || word.tokenIndex !== ti){
-            return false; // Word is in wrong position
+          // Find the solution word text for this blank
+          const solutionWord = pool.find(p => p.sentenceIndex === si && p.tokenIndex === ti);
+          if (!solutionWord) return false; // Should not happen
+
+          if(placedWord.word !== solutionWord.word){
+            return false; // The text of the placed word doesn't match the solution text for this blank
           }
         }
       }
     }
-    return true;
+    // If we get here, all blanks are filled and the word texts are correct.
+    // Return true only if there were actually blanks to fill.
+    return blankCount > 0;
   }
 
   // --- Progress message updater ---
@@ -224,8 +231,9 @@
             span.classList.add('filled');
             span.dataset.filledId = word.id;
 
-            // Check if correct: the word should be at its correct sentenceIndex/tokenIndex
-            if(word.sentenceIndex !== si || word.tokenIndex !== ti){
+            // Check if correct by comparing word text against the solution for this blank
+            const solutionWord = wsState.pool.find(p => p.sentenceIndex === si && p.tokenIndex === ti);
+            if(solutionWord && word.word !== solutionWord.word){
               span.classList.add('incorrect');
             }
           } else {
