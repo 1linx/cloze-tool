@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const path = require('path');
 const http = require('http');
@@ -16,9 +17,9 @@ app.use(express.static(path.join(__dirname, 'public')));
 // A small health endpoint
 app.get('/_health', (req, res) => res.json({ ok: true }));
 
-// Reset endpoint - reloads data.json and broadcasts to all clients
-app.post('/api/reset', (req, res) => {
-  sharedState = loadSharedState(); // Reload data
+// Reset endpoint - reloads data from Supabase/data.json and broadcasts to all clients
+app.post('/api/reset', async (_req, res) => {
+  sharedState = await loadSharedState(); // Reload data
 
   // Notify all connected clients of the new state
   io.sockets.sockets.forEach(socket => {
@@ -41,14 +42,45 @@ app.post('/api/reset', (req, res) => {
 });
 
 // --- Business logic: load and parse data ---
-function loadSharedState() {
-  const dataPath = path.join(__dirname, 'data.json');
+async function loadSharedState() {
   let rawData;
-  try {
-    rawData = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
-  } catch (err) {
-    console.error("Error reading data.json:", err);
-    rawData = { title: "Error", instructions: "Could not load data.", sentences: [] };
+
+  // Try to fetch from Supabase first
+  if (supabase) {
+    try {
+      // Fetch the first puzzle with its sentences
+      const { data: puzzle, error: puzzleError } = await supabase
+        .from('puzzles')
+        .select('*')
+        .limit(1)
+        .single();
+
+      if (puzzleError) throw puzzleError;
+
+      const { data: sentencesData, error: sentencesError } = await supabase
+        .from('sentences')
+        .select('*')
+        .eq('puzzle_id', puzzle.id)
+        .order('display_order', { ascending: true });
+
+      if (sentencesError) throw sentencesError;
+
+      rawData = {
+        title: puzzle.title,
+        instructions: puzzle.instructions,
+        sentences: sentencesData.map(s => s.sentence_text)
+      };
+
+      console.log('Data loaded from Supabase');
+    } catch (err) {
+      console.error("Error loading from Supabase:", err);
+      console.log('Falling back to data.json');
+      rawData = loadFromDataJson();
+    }
+  } else {
+    // Fallback to data.json if Supabase is not configured
+    console.log('Supabase not configured, loading from data.json');
+    rawData = loadFromDataJson();
   }
 
   const sentences = [];
@@ -80,13 +112,34 @@ function loadSharedState() {
   return { sentences, pool, blanks, title: rawData.title, instructions: rawData.instructions };
 }
 
+// Fallback function to load from data.json
+function loadFromDataJson() {
+  const dataPath = path.join(__dirname, 'data.json');
+  try {
+    return JSON.parse(fs.readFileSync(dataPath, 'utf8'));
+  } catch (err) {
+    console.error("Error reading data.json:", err);
+    return { title: "Error", instructions: "Could not load data.", sentences: [] };
+  }
+}
+
 // --- Shared state for all users (in-memory for now) ---
 // This is reset on server restart. For production, use a DB or cache.
-let sharedState = loadSharedState();
+let sharedState = null;
+
+// Initialize shared state asynchronously
+(async () => {
+  sharedState = await loadSharedState();
+  console.log('Shared state initialized');
+})();
 
 // API: get current state
-app.get('/api/sentences', (req, res) => {
+app.get('/api/sentences', (_req, res) => {
   // Return the current shared state (for new clients)
+  if (!sharedState) {
+    return res.status(503).json({ error: 'Server is initializing. Please try again.' });
+  }
+
   // Only send minimal info needed for client
   res.json({
     title: sharedState.title,
@@ -98,6 +151,13 @@ app.get('/api/sentences', (req, res) => {
 
 // --- WebSocket logic ---
 io.on('connection', (socket) => {
+  // Check if sharedState is loaded
+  if (!sharedState) {
+    socket.emit('error', { message: 'Server is initializing. Please refresh the page.' });
+    socket.disconnect();
+    return;
+  }
+
   // Create a shuffled version of the pool for this user
   const userPool = [...sharedState.pool];
   for (let i = userPool.length - 1; i > 0; i--) {
