@@ -1,9 +1,19 @@
 {
   "title": "Fill the blanks",
   "instructions": "Drag words from the side panel into the rectangular blanks.",
-  "sentences": [
-    "The quick [[green]] fox jumps over the lazy [[dog]].",
-    "I love to drink [[coffee]] in the morning.",
-    "She sells [[sea]] [[shells]] by the [[sea]] [[shore]]."
-  ]
+  "pages": {
+    "1": [
+      "The quick [[green]] fox jumps over the lazy [[dog]].",
+      "I love to drink [[coffee]] in the morning."
+    ],
+    "2": [
+      "She sells [[sea]] [[shells]] by the [[sea]] [[shore]].",
+      "The [[cat]] sat on the [[mat]]."
+    ],
+    "3": [
+      "Please [[close]] the [[door]] behind you.",
+      "The [[sun]] is shining [[bright]] today.",
+      "I need a [[glass]] of [[water]]."
+    ]
+  }
 }

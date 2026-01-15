@@ -23,18 +23,30 @@ app.post('/api/reset', async (_req, res) => {
 
   // Notify all connected clients of the new state
   io.sockets.sockets.forEach(socket => {
-    const userPool = [...sharedState.pool];
+    const currentPage = sharedState.userPages[socket.id] || 1;
+
+    // Ensure the page exists
+    if (!sharedState.pages[currentPage]) {
+      sharedState.userPages[socket.id] = 1;
+    }
+
+    const pageToSend = sharedState.userPages[socket.id] || 1;
+    const userPool = [...sharedState.pages[pageToSend].pool];
+
+    // Fisher-Yates shuffle
     for (let i = userPool.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [userPool[i], userPool[j]] = [userPool[j], userPool[i]];
+      const j = Math.floor(Math.random() * (i + 1));
+      [userPool[i], userPool[j]] = [userPool[j], userPool[i]];
     }
 
     socket.emit('state', {
-        title: sharedState.title,
-        instructions: sharedState.instructions,
-        sentences: sharedState.sentences,
-        pool: userPool,
-        blanks: sharedState.blanks
+      title: sharedState.title,
+      instructions: sharedState.instructions,
+      totalPages: sharedState.totalPages,
+      currentPage: pageToSend,
+      sentences: sharedState.pages[pageToSend].sentences,
+      pool: userPool,
+      blanks: sharedState.pages[pageToSend].blanks
     });
   });
 
@@ -61,14 +73,25 @@ async function loadSharedState() {
         .from('sentences')
         .select('*')
         .eq('puzzle_id', puzzle.id)
+        .order('page_number', { ascending: true })
         .order('display_order', { ascending: true });
 
       if (sentencesError) throw sentencesError;
 
+      // Group sentences by page
+      const pageGroups = {};
+      sentencesData.forEach(s => {
+        const pageNum = s.page_number || 1; // Default to page 1 if not set
+        if (!pageGroups[pageNum]) {
+          pageGroups[pageNum] = [];
+        }
+        pageGroups[pageNum].push(s.sentence_text);
+      });
+
       rawData = {
         title: puzzle.title,
         instructions: puzzle.instructions,
-        sentences: sentencesData.map(s => s.sentence_text)
+        pageGroups
       };
 
       console.log('Data loaded from Supabase');
@@ -83,43 +106,89 @@ async function loadSharedState() {
     rawData = loadFromDataJson();
   }
 
-  const sentences = [];
-  const pool = [];
-  const blanks = {};
+  // Create per-page state structure
+  const pages = {};
+  const totalPages = Object.keys(rawData.pageGroups).length;
 
-  rawData.sentences.forEach((line, si) => {
-    const tokens = [];
-    // Split by brackets, keeping the delimiters
-    const parts = line.split(/(\[\[.*?\]\])/);
+  Object.entries(rawData.pageGroups).forEach(([pageNum, sentenceTexts]) => {
+    const pageNumber = parseInt(pageNum);
+    const sentences = [];
+    const pool = [];
+    const blanks = {};
 
-    parts.forEach(part => {
-      if (part.startsWith('[[') && part.endsWith(']]')) {
-        // It's a blank: [[word]]
-        const word = part.slice(2, -2);
-        pool.push({ id: `w-${si}-${tokens.length}`, word, sentenceIndex: si, tokenIndex: tokens.length, placed: false, lockedBy: null });
-        tokens.push(null);
-      } else {
-        // It's text: split by whitespace
-        const words = part.trim().split(/\s+/);
-        words.forEach(w => {
-          if (w) tokens.push(w);
-        });
-      }
+    sentenceTexts.forEach((line, si) => {
+      const tokens = [];
+      // Split by brackets, keeping the delimiters
+      const parts = line.split(/(\[\[.*?\]\])/);
+
+      parts.forEach(part => {
+        if (part.startsWith('[[') && part.endsWith(']]')) {
+          // It's a blank: [[word]]
+          const word = part.slice(2, -2);
+          const wordId = `w-${pageNumber}-${si}-${tokens.length}`;
+          pool.push({
+            id: wordId,
+            word,
+            sentenceIndex: si,
+            tokenIndex: tokens.length,
+            pageNumber,
+            placed: false,
+            lockedBy: null
+          });
+          tokens.push(null);
+        } else {
+          // It's text: split by whitespace
+          const words = part.trim().split(/\s+/);
+          words.forEach(w => {
+            if (w) tokens.push(w);
+          });
+        }
+      });
+      sentences.push({ tokens });
     });
-    sentences.push({ tokens });
+
+    pages[pageNumber] = { sentences, pool, blanks };
   });
 
-  return { sentences, pool, blanks, title: rawData.title, instructions: rawData.instructions };
+  return {
+    title: rawData.title,
+    instructions: rawData.instructions,
+    totalPages,
+    pages,
+    userPages: {}
+  };
 }
 
 // Fallback function to load from data.json
 function loadFromDataJson() {
   const dataPath = path.join(__dirname, 'data.json');
   try {
-    return JSON.parse(fs.readFileSync(dataPath, 'utf8'));
+    const data = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
+
+    // Support both old format (sentences array) and new format (pages object)
+    let pageGroups;
+    if (data.pages) {
+      // New format: pages object already structured
+      pageGroups = data.pages;
+    } else if (data.sentences) {
+      // Old format: convert sentences array to page 1
+      pageGroups = { 1: data.sentences };
+    } else {
+      pageGroups = { 1: [] };
+    }
+
+    return {
+      title: data.title || "Fill the blanks",
+      instructions: data.instructions || "Drag words from the side panel into the rectangular blanks.",
+      pageGroups
+    };
   } catch (err) {
     console.error("Error reading data.json:", err);
-    return { title: "Error", instructions: "Could not load data.", sentences: [] };
+    return {
+      title: "Error",
+      instructions: "Could not load data.",
+      pageGroups: { 1: [] }
+    };
   }
 }
 
@@ -140,12 +209,11 @@ app.get('/api/sentences', (_req, res) => {
     return res.status(503).json({ error: 'Server is initializing. Please try again.' });
   }
 
-  // Only send minimal info needed for client
+  // Send metadata about the puzzle
   res.json({
     title: sharedState.title,
     instructions: sharedState.instructions,
-    sentences: sharedState.sentences,
-    pool: sharedState.pool.map(({id, word, sentenceIndex, tokenIndex, placed, lockedBy}) => ({id, word, sentenceIndex, tokenIndex, placed, lockedBy}))
+    totalPages: sharedState.totalPages
   });
 });
 
@@ -158,8 +226,12 @@ io.on('connection', (socket) => {
     return;
   }
 
-  // Create a shuffled version of the pool for this user
-  const userPool = [...sharedState.pool];
+  // Initialize user on page 1
+  const initialPage = 1;
+  sharedState.userPages[socket.id] = initialPage;
+
+  // Create a shuffled version of the pool for this user (from page 1)
+  const userPool = [...sharedState.pages[initialPage].pool];
   for (let i = userPool.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [userPool[i], userPool[j]] = [userPool[j], userPool[i]];
@@ -169,90 +241,152 @@ io.on('connection', (socket) => {
   socket.emit('state', {
     title: sharedState.title,
     instructions: sharedState.instructions,
-    sentences: sharedState.sentences,
+    totalPages: sharedState.totalPages,
+    currentPage: initialPage,
+    sentences: sharedState.pages[initialPage].sentences,
     pool: userPool,
-    blanks: sharedState.blanks
+    blanks: sharedState.pages[initialPage].blanks
+  });
+
+  // Handle page change
+  socket.on('change_page', ({ pageNumber }) => {
+    // Validate page number
+    if (!pageNumber || pageNumber < 1 || pageNumber > sharedState.totalPages) {
+      return;
+    }
+
+    const currentPage = sharedState.userPages[socket.id];
+
+    // Release all locks from current page
+    if (currentPage && sharedState.pages[currentPage]) {
+      sharedState.pages[currentPage].pool.forEach(word => {
+        if (word.lockedBy === socket.id && !word.placed) {
+          word.lockedBy = null;
+          io.emit('word_unlocked', { id: word.id, pageNumber: currentPage });
+        }
+      });
+    }
+
+    // Update user's page
+    sharedState.userPages[socket.id] = pageNumber;
+
+    // Create a shuffled version of the new page's pool
+    const newPagePool = [...sharedState.pages[pageNumber].pool];
+    for (let i = newPagePool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [newPagePool[i], newPagePool[j]] = [newPagePool[j], newPagePool[i]];
+    }
+
+    // Send new page state
+    socket.emit('page_state', {
+      pageNumber,
+      sentences: sharedState.pages[pageNumber].sentences,
+      pool: newPagePool,
+      blanks: sharedState.pages[pageNumber].blanks,
+      totalPages: sharedState.totalPages
+    });
   });
 
   // Word select (lock)
   socket.on('select_word', ({ id }) => {
-    const wordToLock = sharedState.pool.find(w => w.id === id);
+    const pageNumber = sharedState.userPages[socket.id];
+    if (!pageNumber || !sharedState.pages[pageNumber]) return;
+
+    const page = sharedState.pages[pageNumber];
+    const wordToLock = page.pool.find(w => w.id === id);
 
     // Ensure word exists, is not placed, and is not locked by another user
     if (!wordToLock || wordToLock.placed || (wordToLock.lockedBy && wordToLock.lockedBy !== socket.id)) {
       return;
     }
 
-    // Find and unlock ALL other words locked by this user
-    const previouslyLockedWords = sharedState.pool.filter(w => w.lockedBy === socket.id && w.id !== id);
+    // Find and unlock ALL other words locked by this user on this page
+    const previouslyLockedWords = page.pool.filter(w => w.lockedBy === socket.id && w.id !== id);
     if (previouslyLockedWords.length > 0) {
       previouslyLockedWords.forEach(word => {
         word.lockedBy = null;
-        io.emit('word_unlocked', { id: word.id });
+        io.emit('word_unlocked', { id: word.id, pageNumber });
       });
     }
 
     // Lock the new word, if it's not already locked by this user
     if (wordToLock.lockedBy !== socket.id) {
       wordToLock.lockedBy = socket.id;
-      io.emit('word_locked', { id, by: socket.id });
+      io.emit('word_locked', { id, by: socket.id, pageNumber });
     }
   });
 
   // Word release (unlock)
   socket.on('release_word', ({ id }) => {
-    const word = sharedState.pool.find(w => w.id === id);
-    if(word && word.lockedBy === socket.id && !word.placed){
+    const pageNumber = sharedState.userPages[socket.id];
+    if (!pageNumber || !sharedState.pages[pageNumber]) return;
+
+    const page = sharedState.pages[pageNumber];
+    const word = page.pool.find(w => w.id === id);
+    if (word && word.lockedBy === socket.id && !word.placed) {
       word.lockedBy = null;
-      io.emit('word_unlocked', { id });
+      io.emit('word_unlocked', { id, pageNumber });
     }
   });
 
   // Place word in blank
   socket.on('place_word', ({ id, blank }) => {
-    const word = sharedState.pool.find(w => w.id === id);
-    if(word && word.lockedBy === socket.id && !word.placed){
+    const pageNumber = sharedState.userPages[socket.id];
+    if (!pageNumber || !sharedState.pages[pageNumber]) return;
+
+    const page = sharedState.pages[pageNumber];
+    const word = page.pool.find(w => w.id === id);
+    if (word && word.lockedBy === socket.id && !word.placed) {
       // Remove any existing word from this blank position
-      const existingWordId = sharedState.blanks[blank];
-      if(existingWordId){
-        const existingWord = sharedState.pool.find(w => w.id === existingWordId);
-        if(existingWord){
+      const existingWordId = page.blanks[blank];
+      if (existingWordId) {
+        const existingWord = page.pool.find(w => w.id === existingWordId);
+        if (existingWord) {
           existingWord.placed = false;
-          io.emit('word_removed', { id: existingWordId });
+          io.emit('word_removed', { id: existingWordId, pageNumber });
         }
       }
 
       word.placed = true;
       word.lockedBy = null;
-      sharedState.blanks[blank] = id; // Map blank position to word id
-      io.emit('word_placed', { id, blank });
+      page.blanks[blank] = id; // Map blank position to word id
+      io.emit('word_placed', { id, blank, pageNumber });
     }
   });
 
   // Remove word from blank (return to pool)
   socket.on('remove_word', ({ id }) => {
-    const word = sharedState.pool.find(w => w.id === id);
-    if(word && word.placed){
+    const pageNumber = sharedState.userPages[socket.id];
+    if (!pageNumber || !sharedState.pages[pageNumber]) return;
+
+    const page = sharedState.pages[pageNumber];
+    const word = page.pool.find(w => w.id === id);
+    if (word && word.placed) {
       // Find which blank contains this word and clear it
-      for(let blankPos in sharedState.blanks){
-        if(sharedState.blanks[blankPos] === id){
-          delete sharedState.blanks[blankPos];
+      for (let blankPos in page.blanks) {
+        if (page.blanks[blankPos] === id) {
+          delete page.blanks[blankPos];
           break;
         }
       }
       word.placed = false;
-      io.emit('word_removed', { id });
+      io.emit('word_removed', { id, pageNumber });
     }
   });
 
   // On disconnect, release any locks held by this socket
   socket.on('disconnect', () => {
-    sharedState.pool.forEach(word => {
-      if(word.lockedBy === socket.id && !word.placed){
-        word.lockedBy = null;
-        io.emit('word_unlocked', { id: word.id });
-      }
-    });
+    const pageNumber = sharedState.userPages[socket.id];
+    if (pageNumber && sharedState.pages[pageNumber]) {
+      sharedState.pages[pageNumber].pool.forEach(word => {
+        if (word.lockedBy === socket.id && !word.placed) {
+          word.lockedBy = null;
+          io.emit('word_unlocked', { id: word.id, pageNumber });
+        }
+      });
+    }
+    // Clean up user page tracking
+    delete sharedState.userPages[socket.id];
   });
 });
 

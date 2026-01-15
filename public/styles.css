@@ -30,8 +30,18 @@ main{flex:1;min-height:60vh}
 
 .wordbank h2{margin:0 0 6px 0;font-size:16px}
 
+/* Page navigation */
+.page-nav{display:flex;align-items:center;justify-content:center;gap:16px;margin:20px 0;padding:12px;background:#f8fafc;border-radius:8px}
+.nav-btn{padding:8px 16px;background:#0ea5a4;color:white;border:none;border-radius:6px;cursor:pointer;font-size:14px;font-weight:500;transition:background 0.2s}
+.nav-btn:hover:not(:disabled){background:#0d9190}
+.nav-btn:disabled{background:#cbd5e1;cursor:not-allowed;opacity:0.6}
+.page-indicator{font-weight:600;font-size:16px;color:#334155;min-width:120px;text-align:center}
+
 /* responsive */
 @media (max-width:720px){
   .app{flex-direction:column}
   .wordbank{width:auto;border-left:0;padding-left:0}
+  .page-nav{padding:10px;gap:12px}
+  .nav-btn{padding:8px 12px;font-size:13px}
+  .page-indicator{font-size:14px;min-width:100px}
 }

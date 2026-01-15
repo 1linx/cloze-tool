@@ -6,7 +6,15 @@
 
   // --- WebSocket setup ---
   let socket = null;
-  let wsState = { pool: [], blanks: {}, sentences: [] };
+  let wsState = {
+    pool: [],
+    blanks: {},
+    sentences: [],
+    title: '',
+    instructions: '',
+    totalPages: 1,
+    currentPage: 1
+  };
 
   function clearSelection(){
     selectedId = null;
@@ -23,18 +31,43 @@
 
     socket.on('state', (state) => {
       console.log('Received state:', state);
-      wsState = state;
-      
+      wsState = {
+        pool: state.pool,
+        blanks: state.blanks,
+        sentences: state.sentences,
+        title: state.title,
+        instructions: state.instructions,
+        totalPages: state.totalPages,
+        currentPage: state.currentPage
+      };
+
       // Update dynamic title and instructions
       const titleEl = document.getElementById('app-title');
       const instrEl = document.getElementById('app-instructions');
       if(titleEl && state.title) titleEl.textContent = state.title;
       if(instrEl && state.instructions) instrEl.textContent = state.instructions;
 
+      updatePageNavigation();
       renderFromState();
     });
 
-    socket.on('word_locked', ({ id, by }) => {
+    socket.on('page_state', (pageState) => {
+      console.log('Received page_state:', pageState);
+      wsState.currentPage = pageState.pageNumber;
+      wsState.pool = pageState.pool;
+      wsState.blanks = pageState.blanks;
+      wsState.sentences = pageState.sentences;
+      wsState.totalPages = pageState.totalPages;
+
+      clearSelection();
+      updatePageNavigation();
+      renderFromState();
+    });
+
+    socket.on('word_locked', ({ id, by, pageNumber }) => {
+      // Filter by page - only process if it's for the current page
+      if (pageNumber !== wsState.currentPage) return;
+
       const word = wsState.pool.find(w => w.id === id);
       if(word){
         word.lockedBy = by;
@@ -42,7 +75,10 @@
       }
     });
 
-    socket.on('word_unlocked', ({ id }) => {
+    socket.on('word_unlocked', ({ id, pageNumber }) => {
+      // Filter by page - only process if it's for the current page
+      if (pageNumber !== wsState.currentPage) return;
+
       const word = wsState.pool.find(w => w.id === id);
       if(word){
         word.lockedBy = null;
@@ -50,7 +86,10 @@
       }
     });
 
-    socket.on('word_placed', ({ id, blank }) => {
+    socket.on('word_placed', ({ id, blank, pageNumber }) => {
+      // Filter by page - only process if it's for the current page
+      if (pageNumber !== wsState.currentPage) return;
+
       const word = wsState.pool.find(w => w.id === id);
       if(word){
         word.placed = true;
@@ -61,7 +100,10 @@
       }
     });
 
-    socket.on('word_removed', ({ id }) => {
+    socket.on('word_removed', ({ id, pageNumber }) => {
+      // Filter by page - only process if it's for the current page
+      if (pageNumber !== wsState.currentPage) return;
+
       const word = wsState.pool.find(w => w.id === id);
       if(word){
         word.placed = false;
@@ -393,6 +435,47 @@
     });
   }
 
+  // --- Page navigation functions ---
+  function initPageNavigation() {
+    const prevBtn = document.getElementById('prevPageBtn');
+    const nextBtn = document.getElementById('nextPageBtn');
+
+    if (prevBtn) {
+      prevBtn.addEventListener('click', () => {
+        if (wsState.currentPage > 1) {
+          socket.emit('change_page', { pageNumber: wsState.currentPage - 1 });
+        }
+      });
+    }
+
+    if (nextBtn) {
+      nextBtn.addEventListener('click', () => {
+        if (wsState.currentPage < wsState.totalPages) {
+          socket.emit('change_page', { pageNumber: wsState.currentPage + 1 });
+        }
+      });
+    }
+  }
+
+  function updatePageNavigation() {
+    const prevBtn = document.getElementById('prevPageBtn');
+    const nextBtn = document.getElementById('nextPageBtn');
+    const indicator = document.getElementById('page-indicator');
+
+    if (prevBtn) {
+      prevBtn.disabled = wsState.currentPage <= 1;
+    }
+
+    if (nextBtn) {
+      nextBtn.disabled = wsState.currentPage >= wsState.totalPages;
+    }
+
+    if (indicator) {
+      indicator.textContent = `Page ${wsState.currentPage} of ${wsState.totalPages}`;
+    }
+  }
+
   // Initialize
   connectSocket();
+  initPageNavigation();
 })();

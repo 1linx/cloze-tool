@@ -21,7 +21,7 @@ CREATE TABLE puzzles (
 
 ### `sentences` table
 
-This table will store the sentences for each puzzle, linked by a foreign key. The `display_order` column is used to maintain the correct order of sentences.
+This table will store the sentences for each puzzle, linked by a foreign key. The `display_order` column is used to maintain the correct order of sentences within each page. The `page_number` column groups sentences into pages.
 
 ```sql
 CREATE TABLE sentences (
@@ -29,25 +29,37 @@ CREATE TABLE sentences (
   puzzle_id BIGINT NOT NULL REFERENCES puzzles(id) ON DELETE CASCADE,
   sentence_text TEXT NOT NULL,
   display_order INT NOT NULL,
+  page_number INT NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE INDEX idx_sentences_page ON sentences(puzzle_id, page_number);
 ```
 
 ## 2. Insert Initial Data
 
-After creating the tables, you can run the following SQL to insert the data from your `data.json` file. This will create one puzzle and add the three sentences to it.
+After creating the tables, you can run the following SQL to insert the data from your `data.json` file. This will create one puzzle and add the sentences across multiple pages.
 
 ```sql
 -- Insert the puzzle
 INSERT INTO puzzles (title, instructions)
 VALUES ('Fill the blanks', 'Drag words from the side panel into the rectangular blanks.');
 
--- Insert the sentences for the puzzle (assuming the puzzle_id is 1)
-INSERT INTO sentences (puzzle_id, sentence_text, display_order)
+-- Insert the sentences for the puzzle with page numbers (assuming the puzzle_id is 1)
+-- Page 1: First sentence
+INSERT INTO sentences (puzzle_id, sentence_text, display_order, page_number)
 VALUES
-  (1, 'The quick [[green]] fox jumps over the lazy [[dog]].', 0),
-  (1, 'I love to drink [[coffee]] in the morning.', 1),
-  (1, 'She sells [[sea]] [[shells]] by the [[sea]] [[shore]].', 2);
+  (1, 'The quick [[green]] fox jumps over the lazy [[dog]].', 0, 1);
+
+-- Page 2: Second sentence
+INSERT INTO sentences (puzzle_id, sentence_text, display_order, page_number)
+VALUES
+  (1, 'I love to drink [[coffee]] in the morning.', 0, 2);
+
+-- Page 3: Third sentence
+INSERT INTO sentences (puzzle_id, sentence_text, display_order, page_number)
+VALUES
+  (1, 'She sells [[sea]] [[shells]] by the [[sea]] [[shore]].', 0, 3);
 ```
 
 ## 3. Set up Row Level Security (RLS) - Optional but Recommended
@@ -75,3 +87,32 @@ Click "New Policy" -> "From Scratch"
 - **USING expression:** `true`
 
 This will ensure that your data can be read by your application, but not modified by unauthorized users through the public API.
+
+## 4. Migration for Existing Databases
+
+If you have an existing database without the `page_number` column, run the following migration:
+
+```sql
+-- Add page_number column with default value
+ALTER TABLE sentences
+ADD COLUMN page_number INT NOT NULL DEFAULT 1;
+
+-- Create index for performance
+CREATE INDEX idx_sentences_page ON sentences(puzzle_id, page_number);
+
+-- Example: Split existing sentences into pages (adjust as needed)
+-- This example puts 1-2 sentences on page 1, 3-4 on page 2, etc.
+UPDATE sentences
+SET page_number = CASE
+  WHEN display_order <= 1 THEN 1
+  WHEN display_order <= 3 THEN 2
+  ELSE 3
+END
+WHERE puzzle_id = 1;
+
+-- Verify the migration
+SELECT puzzle_id, page_number, display_order, sentence_text
+FROM sentences
+WHERE puzzle_id = 1
+ORDER BY page_number, display_order;
+```
