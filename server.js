@@ -12,10 +12,29 @@ const PORT = process.env.PORT || 3000;
 
 const supabase = require('./lib/supabaseClient');
 
+app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // A small health endpoint
 app.get('/_health', (req, res) => res.json({ ok: true }));
+
+// Admin authentication endpoint
+app.post('/api/admin/login', (req, res) => {
+  const { password } = req.body;
+  const adminPassword = process.env.ADMIN_PASSWORD;
+
+  if (!adminPassword) {
+    return res.status(500).json({ error: 'Admin password not configured' });
+  }
+
+  if (password === adminPassword) {
+    // Generate a simple token (in production, use JWT or similar)
+    const token = Buffer.from(`admin:${Date.now()}`).toString('base64');
+    return res.json({ success: true, token });
+  }
+
+  res.status(401).json({ error: 'Invalid password' });
+});
 
 // Reset endpoint - reloads data from Supabase/data.json and broadcasts to all clients
 app.post('/api/reset', async (_req, res) => {
@@ -155,7 +174,9 @@ async function loadSharedState() {
     instructions: rawData.instructions,
     totalPages,
     pages,
-    userPages: {}
+    userPages: {},
+    adminUsers: {}, // Track which users are admins: { socketId: true }
+    unlockedWords: {} // Track unlocked words per page: { pageNum: { wordId: true } }
   };
 }
 
@@ -217,6 +238,25 @@ app.get('/api/sentences', (_req, res) => {
   });
 });
 
+// Helper function to filter words based on admin status
+function getFilteredPool(pageNumber, isAdmin) {
+  const page = sharedState.pages[pageNumber];
+  if (!page) return [];
+
+  let pool = [...page.pool];
+
+  // If not admin, only show unlocked words
+  if (!isAdmin) {
+    // Initialize unlockedWords for this page if not exists
+    if (!sharedState.unlockedWords[pageNumber]) {
+      sharedState.unlockedWords[pageNumber] = {};
+    }
+    pool = pool.filter(word => sharedState.unlockedWords[pageNumber][word.id]);
+  }
+
+  return pool;
+}
+
 // --- WebSocket logic ---
 io.on('connection', (socket) => {
   // Check if sharedState is loaded
@@ -230,14 +270,19 @@ io.on('connection', (socket) => {
   const initialPage = 1;
   sharedState.userPages[socket.id] = initialPage;
 
-  // Create a shuffled version of the pool for this user (from page 1)
-  const userPool = [...sharedState.pages[initialPage].pool];
+  // Check if user is admin (will be set via admin_login event)
+  const isAdmin = sharedState.adminUsers[socket.id] || false;
+
+  // Get filtered pool based on admin status
+  const userPool = getFilteredPool(initialPage, isAdmin);
+
+  // Shuffle for this user
   for (let i = userPool.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [userPool[i], userPool[j]] = [userPool[j], userPool[i]];
   }
 
-  // Send current state to new client, with the shuffled pool
+  // Send current state to new client, with the filtered and shuffled pool
   socket.emit('state', {
     title: sharedState.title,
     instructions: sharedState.instructions,
@@ -245,7 +290,68 @@ io.on('connection', (socket) => {
     currentPage: initialPage,
     sentences: sharedState.pages[initialPage].sentences,
     pool: userPool,
-    blanks: sharedState.pages[initialPage].blanks
+    blanks: sharedState.pages[initialPage].blanks,
+    isAdmin
+  });
+
+  // Admin login event
+  socket.on('admin_login', ({ token }) => {
+    // Simple token validation (in production, verify JWT)
+    if (token && token.startsWith('YWRtaW4')) {
+      sharedState.adminUsers[socket.id] = true;
+
+      // Send updated state with all words visible
+      const currentPage = sharedState.userPages[socket.id];
+      const adminPool = getFilteredPool(currentPage, true);
+
+      // Shuffle for admin
+      for (let i = adminPool.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [adminPool[i], adminPool[j]] = [adminPool[j], adminPool[i]];
+      }
+
+      socket.emit('admin_authenticated', {
+        isAdmin: true,
+        pool: adminPool,
+        unlockedWords: sharedState.unlockedWords[currentPage] || {}
+      });
+    } else {
+      socket.emit('admin_auth_failed');
+    }
+  });
+
+  // Admin unlock word event
+  socket.on('admin_unlock_word', ({ wordId }) => {
+    // Verify user is admin
+    if (!sharedState.adminUsers[socket.id]) {
+      return;
+    }
+
+    const pageNumber = sharedState.userPages[socket.id];
+
+    // Initialize unlockedWords for this page if not exists
+    if (!sharedState.unlockedWords[pageNumber]) {
+      sharedState.unlockedWords[pageNumber] = {};
+    }
+
+    // Unlock the word
+    sharedState.unlockedWords[pageNumber][wordId] = true;
+
+    // Broadcast to all non-admin users on this page
+    io.sockets.sockets.forEach(clientSocket => {
+      const isClientAdmin = sharedState.adminUsers[clientSocket.id];
+      const clientPage = sharedState.userPages[clientSocket.id];
+
+      if (!isClientAdmin && clientPage === pageNumber) {
+        const word = sharedState.pages[pageNumber].pool.find(w => w.id === wordId);
+        if (word) {
+          clientSocket.emit('word_unlocked_by_admin', { word });
+        }
+      }
+    });
+
+    // Confirm to admin
+    socket.emit('word_unlock_confirmed', { wordId });
   });
 
   // Handle page change
@@ -270,8 +376,11 @@ io.on('connection', (socket) => {
     // Update user's page
     sharedState.userPages[socket.id] = pageNumber;
 
-    // Create a shuffled version of the new page's pool
-    const newPagePool = [...sharedState.pages[pageNumber].pool];
+    // Get filtered pool based on admin status
+    const isAdmin = sharedState.adminUsers[socket.id] || false;
+    const newPagePool = getFilteredPool(pageNumber, isAdmin);
+
+    // Shuffle
     for (let i = newPagePool.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [newPagePool[i], newPagePool[j]] = [newPagePool[j], newPagePool[i]];
@@ -283,7 +392,9 @@ io.on('connection', (socket) => {
       sentences: sharedState.pages[pageNumber].sentences,
       pool: newPagePool,
       blanks: sharedState.pages[pageNumber].blanks,
-      totalPages: sharedState.totalPages
+      totalPages: sharedState.totalPages,
+      isAdmin,
+      unlockedWords: sharedState.unlockedWords[pageNumber] || {}
     });
   });
 
@@ -385,8 +496,9 @@ io.on('connection', (socket) => {
         }
       });
     }
-    // Clean up user page tracking
+    // Clean up user page tracking and admin status
     delete sharedState.userPages[socket.id];
+    delete sharedState.adminUsers[socket.id];
   });
 });
 

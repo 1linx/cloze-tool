@@ -13,8 +13,11 @@
     title: '',
     instructions: '',
     totalPages: 1,
-    currentPage: 1
+    currentPage: 1,
+    isAdmin: false,
+    unlockedWords: {}
   };
+  let adminToken = null;
 
   function clearSelection(){
     selectedId = null;
@@ -38,7 +41,9 @@
         title: state.title,
         instructions: state.instructions,
         totalPages: state.totalPages,
-        currentPage: state.currentPage
+        currentPage: state.currentPage,
+        isAdmin: state.isAdmin || false,
+        unlockedWords: state.unlockedWords || {}
       };
 
       // Update dynamic title and instructions
@@ -47,6 +52,7 @@
       if(titleEl && state.title) titleEl.textContent = state.title;
       if(instrEl && state.instructions) instrEl.textContent = state.instructions;
 
+      updateAdminUI();
       updatePageNavigation();
       renderFromState();
     });
@@ -58,9 +64,40 @@
       wsState.blanks = pageState.blanks;
       wsState.sentences = pageState.sentences;
       wsState.totalPages = pageState.totalPages;
+      wsState.isAdmin = pageState.isAdmin || wsState.isAdmin;
+      wsState.unlockedWords = pageState.unlockedWords || {};
 
       clearSelection();
       updatePageNavigation();
+      renderFromState();
+    });
+
+    // Admin authentication success
+    socket.on('admin_authenticated', (data) => {
+      wsState.isAdmin = true;
+      wsState.pool = data.pool;
+      wsState.unlockedWords = data.unlockedWords;
+      adminToken = data.token || adminToken;
+      updateAdminUI();
+      renderFromState();
+      hideAdminModal();
+    });
+
+    // Admin authentication failed
+    socket.on('admin_auth_failed', () => {
+      showAdminError('Invalid password');
+    });
+
+    // Admin word unlock confirmed
+    socket.on('word_unlock_confirmed', ({ wordId }) => {
+      wsState.unlockedWords[wordId] = true;
+      renderFromState();
+    });
+
+    // Non-admin: word unlocked by admin
+    socket.on('word_unlocked_by_admin', ({ word }) => {
+      // Add word to pool
+      wsState.pool.push(word);
       renderFromState();
     });
 
@@ -325,8 +362,20 @@
         w.classList.add('selected');
       }
 
+      // Admin mode: mark unlocked words
+      if(wsState.isAdmin){
+        const isUnlocked = wsState.unlockedWords[item.id];
+        if(isUnlocked){
+          w.classList.add('admin-unlocked');
+          w.title = 'Unlocked for students';
+        } else {
+          w.classList.add('admin-locked');
+          w.title = 'Click to unlock for students';
+        }
+      }
+
       const isLocked = item.lockedBy && item.lockedBy !== socket.id;
-      w.draggable = !complete && !isLocked;
+      w.draggable = !complete && !isLocked && !wsState.isAdmin;
 
       if(isLocked){
         w.classList.add('locked');
@@ -334,40 +383,52 @@
       }
 
       if(!complete && !isLocked){
-        // Drag start
-        w.addEventListener('dragstart', e=>{
-          socket.emit('select_word', { id: item.id });
-          e.dataTransfer.setData('text/plain', item.id);
-          e.dataTransfer.effectAllowed = 'move';
-        });
+        // Admin mode: click to unlock
+        if(wsState.isAdmin){
+          w.addEventListener('click', e=>{
+            e.preventDefault();
+            const isUnlocked = wsState.unlockedWords[item.id];
+            if(!isUnlocked){
+              socket.emit('admin_unlock_word', { wordId: item.id });
+            }
+          });
+        } else {
+          // Regular user mode: drag and select
+          // Drag start
+          w.addEventListener('dragstart', e=>{
+            socket.emit('select_word', { id: item.id });
+            e.dataTransfer.setData('text/plain', item.id);
+            e.dataTransfer.effectAllowed = 'move';
+          });
 
-        // Click to select
-        w.addEventListener('click', e=>{
-          e.preventDefault();
-          if(selectedId === item.id){
-            socket.emit('release_word', { id: item.id });
+          // Click to select
+          w.addEventListener('click', e=>{
+            e.preventDefault();
+            if(selectedId === item.id){
+              socket.emit('release_word', { id: item.id });
+              clearSelection();
+              return;
+            }
             clearSelection();
-            return;
-          }
-          clearSelection();
-          selectedId = item.id;
-          w.classList.add('selected');
-          socket.emit('select_word', { id: item.id });
-        });
+            selectedId = item.id;
+            w.classList.add('selected');
+            socket.emit('select_word', { id: item.id });
+          });
 
-        // Touch to select
-        w.addEventListener('touchstart', e=>{
-          e.preventDefault();
-          if(selectedId === item.id){
-            socket.emit('release_word', { id: item.id });
+          // Touch to select
+          w.addEventListener('touchstart', e=>{
+            e.preventDefault();
+            if(selectedId === item.id){
+              socket.emit('release_word', { id: item.id });
+              clearSelection();
+              return;
+            }
             clearSelection();
-            return;
-          }
-          clearSelection();
-          selectedId = item.id;
-          w.classList.add('selected');
-          socket.emit('select_word', { id: item.id });
-        }, {passive:false});
+            selectedId = item.id;
+            w.classList.add('selected');
+            socket.emit('select_word', { id: item.id });
+          }, {passive:false});
+        }
       }
 
       wordsRoot.appendChild(w);
@@ -473,6 +534,98 @@
     if (indicator) {
       indicator.textContent = `Page ${wsState.currentPage} of ${wsState.totalPages}`;
     }
+  }
+
+  // --- Admin UI functions ---
+  function updateAdminUI() {
+    const adminIndicator = document.getElementById('adminModeIndicator');
+    const adminBtn = document.getElementById('adminBtn');
+
+    if (wsState.isAdmin) {
+      if (adminIndicator) adminIndicator.style.display = 'flex';
+      if (adminBtn) adminBtn.style.display = 'none';
+    } else {
+      if (adminIndicator) adminIndicator.style.display = 'none';
+      if (adminBtn) adminBtn.style.display = 'inline-block';
+    }
+  }
+
+  function showAdminModal() {
+    const modal = document.getElementById('adminModal');
+    const passwordInput = document.getElementById('adminPassword');
+    const errorDiv = document.getElementById('adminError');
+    if (modal) modal.style.display = 'flex';
+    if (passwordInput) {
+      passwordInput.value = '';
+      passwordInput.focus();
+    }
+    if (errorDiv) errorDiv.textContent = '';
+  }
+
+  function hideAdminModal() {
+    const modal = document.getElementById('adminModal');
+    if (modal) modal.style.display = 'none';
+  }
+
+  function showAdminError(message) {
+    const errorDiv = document.getElementById('adminError');
+    if (errorDiv) errorDiv.textContent = message;
+  }
+
+  async function handleAdminLogin() {
+    const passwordInput = document.getElementById('adminPassword');
+    const password = passwordInput ? passwordInput.value : '';
+
+    if (!password) {
+      showAdminError('Please enter a password');
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/admin/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password })
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        adminToken = data.token;
+        // Send token to socket
+        socket.emit('admin_login', { token: data.token });
+      } else {
+        showAdminError(data.error || 'Login failed');
+      }
+    } catch (err) {
+      console.error('Admin login error:', err);
+      showAdminError('Connection error');
+    }
+  }
+
+  // --- Admin button handlers ---
+  const adminBtn = document.getElementById('adminBtn');
+  if (adminBtn) {
+    adminBtn.addEventListener('click', showAdminModal);
+  }
+
+  const adminLoginBtn = document.getElementById('adminLoginBtn');
+  if (adminLoginBtn) {
+    adminLoginBtn.addEventListener('click', handleAdminLogin);
+  }
+
+  const adminCancelBtn = document.getElementById('adminCancelBtn');
+  if (adminCancelBtn) {
+    adminCancelBtn.addEventListener('click', hideAdminModal);
+  }
+
+  const adminPassword = document.getElementById('adminPassword');
+  if (adminPassword) {
+    adminPassword.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        handleAdminLogin();
+      }
+    });
   }
 
   // Initialize

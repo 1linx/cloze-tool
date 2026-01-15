@@ -10,10 +10,33 @@
     <header>
       <h1 id="app-title">Fill the blanks</h1>
       <p id="app-instructions">Drag words from the side panel into the rectangular blanks.</p>
-      <button id="resetBtn" class="reset-btn">Reset Exercise</button>
+      <div class="header-buttons">
+        <button id="adminBtn" class="admin-btn">Admin Login</button>
+        <button id="resetBtn" class="reset-btn">Reset Exercise</button>
+      </div>
     </header>
 
+    <!-- Admin Login Modal -->
+    <div id="adminModal" class="modal">
+      <div class="modal-content">
+        <h2>Admin Login</h2>
+        <p>Enter the admin password to unlock word management.</p>
+        <input type="password" id="adminPassword" placeholder="Admin password" />
+        <div class="modal-buttons">
+          <button id="adminLoginBtn" class="btn-primary">Login</button>
+          <button id="adminCancelBtn" class="btn-secondary">Cancel</button>
+        </div>
+        <div id="adminError" class="error-message"></div>
+      </div>
+    </div>
+
     <div id="message" class="message" aria-live="polite"></div>
+
+    <!-- Admin Mode Indicator -->
+    <div id="adminModeIndicator" class="admin-mode-indicator" style="display: none;">
+      <span class="admin-badge">🔓 Admin Mode</span>
+      <span class="admin-help">Click words to unlock them for students</span>
+    </div>
 
     <div id="page-navigation" class="page-nav">
       <button id="prevPageBtn" class="nav-btn" disabled>← Previous</button>
