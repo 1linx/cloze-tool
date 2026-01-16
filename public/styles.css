@@ -24,12 +24,13 @@ main{flex:1;min-height:60vh}
 
 .message{display:none;padding:8px 10px;border-radius:6px;margin:10px 0;font-weight:600}
 .message.show{display:block;background:#fff7ed;border:1px solid #f59e0b;color:#92400e}
+.message.success{background:#d1fae5;border:1px solid #10b981;color:#065f46}
+.message.error{background:#fee2e2;border:1px solid #ef4444;color:#991b1b}
 .sentence{margin-bottom:18px;font-size:18px}
 .token{margin-right:6px}
 .blank{display:inline-flex;align-items:center;justify-content:center;min-width:100px;height:30px;border:2px dashed #666;border-radius:6px;vertical-align:middle;margin-right:6px;padding:4px 8px;background:white}
 .blank.dragover{background:#fef3c7;border-color:#f59e0b}
-.blank.filled{border-style:solid;background:#e6ffed}
-.blank.incorrect{background:#ffe6e6;border-color:#d66}
+.blank.filled{border-style:solid}
 .hint{color:#666;font-size:13px}
 
 .wordbank h2{margin:0 0 6px 0;font-size:16px}

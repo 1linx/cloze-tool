@@ -38,19 +38,25 @@ app.post('/api/admin/login', (req, res) => {
 
 // Reset endpoint - reloads data from Supabase/data.json and broadcasts to all clients
 app.post('/api/reset', async (_req, res) => {
-  sharedState = await loadSharedState(); // Reload data
+  // Preserve admin status before reset
+  const preservedAdminUsers = { ...sharedState.adminUsers };
+
+  sharedState = await loadSharedState(); // Reload data (clears blanks, unlockedWords, adminUsers)
+
+  // Restore admin status
+  sharedState.adminUsers = preservedAdminUsers;
 
   // Notify all connected clients of the new state
   io.sockets.sockets.forEach(socket => {
-    const currentPage = sharedState.userPages[socket.id] || 1;
+    // Reset all users to page 1
+    sharedState.userPages[socket.id] = 1;
+    const pageToSend = 1;
 
-    // Ensure the page exists
-    if (!sharedState.pages[currentPage]) {
-      sharedState.userPages[socket.id] = 1;
-    }
+    // Check if user is admin (preserved from before reset)
+    const isAdmin = sharedState.adminUsers[socket.id] || false;
 
-    const pageToSend = sharedState.userPages[socket.id] || 1;
-    const userPool = [...sharedState.pages[pageToSend].pool];
+    // Get filtered pool based on admin status
+    let userPool = getFilteredPool(pageToSend, isAdmin);
 
     // Fisher-Yates shuffle
     for (let i = userPool.length - 1; i > 0; i--) {
@@ -65,7 +71,9 @@ app.post('/api/reset', async (_req, res) => {
       currentPage: pageToSend,
       sentences: sharedState.pages[pageToSend].sentences,
       pool: userPool,
-      blanks: sharedState.pages[pageToSend].blanks
+      blanks: sharedState.pages[pageToSend].blanks,
+      unlockedWords: sharedState.unlockedWords[pageToSend] || {},
+      isAdmin
     });
   });
 
@@ -329,6 +337,11 @@ io.on('connection', (socket) => {
 
     const pageNumber = sharedState.userPages[socket.id];
 
+    // Validate page number exists
+    if (!pageNumber || !sharedState.pages[pageNumber]) {
+      return;
+    }
+
     // Initialize unlockedWords for this page if not exists
     if (!sharedState.unlockedWords[pageNumber]) {
       sharedState.unlockedWords[pageNumber] = {};
@@ -342,7 +355,8 @@ io.on('connection', (socket) => {
       const isClientAdmin = sharedState.adminUsers[clientSocket.id];
       const clientPage = sharedState.userPages[clientSocket.id];
 
-      if (!isClientAdmin && clientPage === pageNumber) {
+      // Only broadcast if client has a valid page and is on the same page
+      if (!isClientAdmin && clientPage === pageNumber && sharedState.pages[pageNumber]) {
         const word = sharedState.pages[pageNumber].pool.find(w => w.id === wordId);
         if (word) {
           clientSocket.emit('word_unlocked_by_admin', { word });

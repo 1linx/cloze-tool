@@ -213,28 +213,40 @@
 
     if(!blanks.length){
       if(messageEl){
-        messageEl.classList.remove('show');
+        messageEl.classList.remove('show', 'success', 'error');
         messageEl.textContent = '';
       }
       return;
     }
 
-    const remaining = blanks.reduce((acc, b) => {
-      const isEmpty = !b.dataset.filledId;
-      const isIncorrect = b.classList.contains('incorrect');
-      return acc + (isEmpty || isIncorrect ? 1 : 0);
-    }, 0);
+    // Check if all blanks are filled
+    const allFilled = blanks.every(b => b.dataset.filledId);
 
     if(messageEl){
-      if(remaining === 0){
-        messageEl.textContent = 'Complete';
-        messageEl.classList.add('show');
-      } else if(remaining === 2 || remaining === 1){
-        messageEl.textContent = 'Almost finished';
-        messageEl.classList.add('show');
+      if(allFilled){
+        // All blanks are filled - check if correct
+        if(isComplete()){
+          // All correct
+          messageEl.textContent = 'Complete';
+          messageEl.classList.remove('error');
+          messageEl.classList.add('show', 'success');
+        } else {
+          // All filled but some incorrect
+          messageEl.textContent = 'Two or more words are incorrect.';
+          messageEl.classList.remove('success');
+          messageEl.classList.add('show', 'error');
+        }
       } else {
-        messageEl.classList.remove('show');
-        messageEl.textContent = '';
+        // Not all filled yet
+        const emptyCount = blanks.filter(b => !b.dataset.filledId).length;
+        if(emptyCount === 1 || emptyCount === 2){
+          messageEl.textContent = 'Almost finished';
+          messageEl.classList.remove('success', 'error');
+          messageEl.classList.add('show');
+        } else {
+          messageEl.classList.remove('show', 'success', 'error');
+          messageEl.textContent = '';
+        }
       }
     }
   }
@@ -309,12 +321,6 @@
             span.textContent = word.word;
             span.classList.add('filled');
             span.dataset.filledId = word.id;
-
-            // Check if correct by comparing word text against the solution for this blank
-            const solutionWord = wsState.pool.find(p => p.sentenceIndex === si && p.tokenIndex === ti);
-            if(solutionWord && word.word !== solutionWord.word){
-              span.classList.add('incorrect');
-            }
           } else {
             span.textContent = '';
             delete span.dataset.filledId;
@@ -540,13 +546,16 @@
   function updateAdminUI() {
     const adminIndicator = document.getElementById('adminModeIndicator');
     const adminBtn = document.getElementById('adminBtn');
+    const resetBtn = document.getElementById('resetBtn');
 
     if (wsState.isAdmin) {
       if (adminIndicator) adminIndicator.style.display = 'flex';
       if (adminBtn) adminBtn.style.display = 'none';
+      if (resetBtn) resetBtn.style.display = 'inline-block';
     } else {
       if (adminIndicator) adminIndicator.style.display = 'none';
       if (adminBtn) adminBtn.style.display = 'inline-block';
+      if (resetBtn) resetBtn.style.display = 'none';
     }
   }
 
