@@ -30,6 +30,11 @@
 
     socket.on('connect', () => {
       console.log('Connected to server');
+      // Auto-login if a token was previously saved
+      const savedToken = localStorage.getItem('adminToken');
+      if (savedToken) {
+        socket.emit('admin_login', { token: savedToken });
+      }
     });
 
     socket.on('state', (state) => {
@@ -78,7 +83,8 @@
       wsState.isAdmin = true;
       wsState.pool = data.pool;
       wsState.unlockedWords = data.unlockedWords;
-      adminToken = data.token || adminToken;
+      if (data.token) adminToken = data.token;
+      if (adminToken) localStorage.setItem('adminToken', adminToken);
       updateAdminUI();
       renderFromState();
       hideAdminModal();
@@ -86,6 +92,9 @@
 
     // Admin authentication failed
     socket.on('admin_auth_failed', () => {
+      // Clear any stale saved token
+      localStorage.removeItem('adminToken');
+      adminToken = null;
       showAdminError('Invalid password');
     });
 
@@ -471,6 +480,7 @@
       const data = await response.json();
       if (response.ok && data.success) {
         adminToken = data.token;
+        localStorage.setItem('adminToken', adminToken);
         socket.emit('admin_login', { token: data.token });
       } else {
         showAdminError(data.error || 'Login failed');
@@ -495,6 +505,19 @@
   if (adminPassword) {
     adminPassword.addEventListener('keypress', (e) => {
       if (e.key === 'Enter') handleAdminLogin();
+    });
+  }
+
+  // Admin logout button
+  const adminLogoutBtn = document.getElementById('adminLogoutBtn');
+  if (adminLogoutBtn) {
+    adminLogoutBtn.addEventListener('click', () => {
+      localStorage.removeItem('adminToken');
+      adminToken = null;
+      wsState.isAdmin = false;
+      updateAdminUI();
+      // Re-request state from server as non-admin
+      socket.emit('change_page', { pageNumber: wsState.currentPage });
     });
   }
 

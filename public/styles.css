@@ -146,7 +146,9 @@ main{flex:1;min-height:60vh}
   margin:16px 0;
 }
 .admin-badge{font-size:13px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink)}
-.admin-help{color:var(--ink-mid);font-size:13px}
+.admin-help{color:var(--ink-mid);font-size:13px;flex:1}
+.admin-logout-btn{padding:3px 10px;background:none;color:var(--ink-mid);border:1px solid var(--rule);cursor:pointer;font-family:inherit;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;margin-left:auto}
+.admin-logout-btn:hover{color:var(--ink);border-color:var(--ink)}
 .word-item.admin-unlocked{background:#deecd8;border-color:#7aab6e;opacity:1}
 .word-item.admin-locked{background:#f0e8d0;border-color:var(--rule);cursor:pointer;opacity:0.85}
 .word-item.admin-locked:hover{background:#e8dfc8;opacity:1}
