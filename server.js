@@ -28,7 +28,6 @@ app.post('/api/admin/login', (req, res) => {
   }
 
   if (password === adminPassword) {
-    // Generate a simple token (in production, use JWT or similar)
     const token = Buffer.from(`admin:${Date.now()}`).toString('base64');
     return res.json({ success: true, token });
   }
@@ -38,31 +37,16 @@ app.post('/api/admin/login', (req, res) => {
 
 // Reset endpoint - reloads data from Supabase/data.json and broadcasts to all clients
 app.post('/api/reset', async (_req, res) => {
-  // Preserve admin status before reset
   const preservedAdminUsers = { ...sharedState.adminUsers };
 
-  sharedState = await loadSharedState(); // Reload data (clears blanks, unlockedWords, adminUsers)
-
-  // Restore admin status
+  sharedState = await loadSharedState();
   sharedState.adminUsers = preservedAdminUsers;
 
-  // Notify all connected clients of the new state
   io.sockets.sockets.forEach(socket => {
-    // Reset all users to page 1
     sharedState.userPages[socket.id] = 1;
     const pageToSend = 1;
-
-    // Check if user is admin (preserved from before reset)
     const isAdmin = sharedState.adminUsers[socket.id] || false;
-
-    // Get filtered pool based on admin status
-    let userPool = getFilteredPool(pageToSend, isAdmin);
-
-    // Fisher-Yates shuffle
-    for (let i = userPool.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [userPool[i], userPool[j]] = [userPool[j], userPool[i]];
-    }
+    const userPool = shuffled(getDedupedPool(pageToSend, isAdmin));
 
     socket.emit('state', {
       title: sharedState.title,
@@ -72,6 +56,7 @@ app.post('/api/reset', async (_req, res) => {
       sentences: sharedState.pages[pageToSend].sentences,
       pool: userPool,
       blanks: sharedState.pages[pageToSend].blanks,
+      solution: getSolutionMap(pageToSend),
       unlockedWords: sharedState.unlockedWords[pageToSend] || {},
       isAdmin
     });
@@ -84,10 +69,8 @@ app.post('/api/reset', async (_req, res) => {
 async function loadSharedState() {
   let rawData;
 
-  // Try to fetch from Supabase first
   if (supabase) {
     try {
-      // Fetch the first puzzle with its sentences
       const { data: puzzle, error: puzzleError } = await supabase
         .from('puzzles')
         .select('*')
@@ -105,22 +88,14 @@ async function loadSharedState() {
 
       if (sentencesError) throw sentencesError;
 
-      // Group sentences by page
       const pageGroups = {};
       sentencesData.forEach(s => {
-        const pageNum = s.page_number || 1; // Default to page 1 if not set
-        if (!pageGroups[pageNum]) {
-          pageGroups[pageNum] = [];
-        }
+        const pageNum = s.page_number || 1;
+        if (!pageGroups[pageNum]) pageGroups[pageNum] = [];
         pageGroups[pageNum].push(s.sentence_text);
       });
 
-      rawData = {
-        title: puzzle.title,
-        instructions: puzzle.instructions,
-        pageGroups
-      };
-
+      rawData = { title: puzzle.title, instructions: puzzle.instructions, pageGroups };
       console.log('Data loaded from Supabase');
     } catch (err) {
       console.error("Error loading from Supabase:", err);
@@ -128,12 +103,10 @@ async function loadSharedState() {
       rawData = loadFromDataJson();
     }
   } else {
-    // Fallback to data.json if Supabase is not configured
     console.log('Supabase not configured, loading from data.json');
     rawData = loadFromDataJson();
   }
 
-  // Create per-page state structure
   const pages = {};
   const totalPages = Object.keys(rawData.pageGroups).length;
 
@@ -145,30 +118,21 @@ async function loadSharedState() {
 
     sentenceTexts.forEach((line, si) => {
       const tokens = [];
-      // Split by brackets, keeping the delimiters
       const parts = line.split(/(\[\[.*?\]\])/);
 
       parts.forEach(part => {
         if (part.startsWith('[[') && part.endsWith(']]')) {
-          // It's a blank: [[word]]
           const word = part.slice(2, -2);
-          const wordId = `w-${pageNumber}-${si}-${tokens.length}`;
           pool.push({
-            id: wordId,
             word,
             sentenceIndex: si,
             tokenIndex: tokens.length,
-            pageNumber,
-            placed: false,
-            lockedBy: null
+            pageNumber
           });
           tokens.push(null);
         } else {
-          // It's text: split by whitespace
           const words = part.trim().split(/\s+/);
-          words.forEach(w => {
-            if (w) tokens.push(w);
-          });
+          words.forEach(w => { if (w) tokens.push(w); });
         }
       });
       sentences.push({ tokens });
@@ -183,29 +147,23 @@ async function loadSharedState() {
     totalPages,
     pages,
     userPages: {},
-    adminUsers: {}, // Track which users are admins: { socketId: true }
-    unlockedWords: {} // Track unlocked words per page: { pageNum: { wordId: true } }
+    adminUsers: {},
+    unlockedWords: {} // { pageNum: { wordText: true } }
   };
 }
 
-// Fallback function to load from data.json
 function loadFromDataJson() {
   const dataPath = path.join(__dirname, 'data.json');
   try {
     const data = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
-
-    // Support both old format (sentences array) and new format (pages object)
     let pageGroups;
     if (data.pages) {
-      // New format: pages object already structured
       pageGroups = data.pages;
     } else if (data.sentences) {
-      // Old format: convert sentences array to page 1
       pageGroups = { 1: data.sentences };
     } else {
       pageGroups = { 1: [] };
     }
-
     return {
       title: data.title || "Fill the blanks",
       instructions: data.instructions || "Drag words from the side panel into the rectangular blanks.",
@@ -213,114 +171,101 @@ function loadFromDataJson() {
     };
   } catch (err) {
     console.error("Error reading data.json:", err);
-    return {
-      title: "Error",
-      instructions: "Could not load data.",
-      pageGroups: { 1: [] }
-    };
+    return { title: "Error", instructions: "Could not load data.", pageGroups: { 1: [] } };
   }
 }
 
-// --- Shared state for all users (in-memory for now) ---
-// This is reset on server restart. For production, use a DB or cache.
+// --- Helpers ---
+
+function shuffled(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+// Returns deduplicated pool by word text, filtered by unlock status for non-admins.
+// Each item: { id: wordText, word: wordText }
+function getDedupedPool(pageNumber, isAdmin) {
+  const page = sharedState.pages[pageNumber];
+  if (!page) return [];
+
+  let pool = page.pool;
+
+  if (!isAdmin) {
+    if (!sharedState.unlockedWords[pageNumber]) sharedState.unlockedWords[pageNumber] = {};
+    const unlocked = sharedState.unlockedWords[pageNumber];
+    pool = pool.filter(w => unlocked[w.word]);
+  }
+
+  const seen = new Set();
+  return pool.reduce((acc, w) => {
+    if (!seen.has(w.word)) {
+      seen.add(w.word);
+      acc.push({ id: w.word, word: w.word });
+    }
+    return acc;
+  }, []);
+}
+
+// Returns map of blank positions to correct word text, for all blanks on a page.
+function getSolutionMap(pageNumber) {
+  const page = sharedState.pages[pageNumber];
+  if (!page) return {};
+  const map = {};
+  page.pool.forEach(w => { map[`${w.sentenceIndex}-${w.tokenIndex}`] = w.word; });
+  return map;
+}
+
+// --- Shared state ---
 let sharedState = null;
 
-// Initialize shared state asynchronously
 (async () => {
   sharedState = await loadSharedState();
   console.log('Shared state initialized');
 })();
 
-// API: get current state
 app.get('/api/sentences', (_req, res) => {
-  // Return the current shared state (for new clients)
-  if (!sharedState) {
-    return res.status(503).json({ error: 'Server is initializing. Please try again.' });
-  }
-
-  // Send metadata about the puzzle
-  res.json({
-    title: sharedState.title,
-    instructions: sharedState.instructions,
-    totalPages: sharedState.totalPages
-  });
+  if (!sharedState) return res.status(503).json({ error: 'Server is initializing. Please try again.' });
+  res.json({ title: sharedState.title, instructions: sharedState.instructions, totalPages: sharedState.totalPages });
 });
-
-// Helper function to filter words based on admin status
-function getFilteredPool(pageNumber, isAdmin) {
-  const page = sharedState.pages[pageNumber];
-  if (!page) return [];
-
-  let pool = [...page.pool];
-
-  // If not admin, only show unlocked words
-  if (!isAdmin) {
-    // Initialize unlockedWords for this page if not exists
-    if (!sharedState.unlockedWords[pageNumber]) {
-      sharedState.unlockedWords[pageNumber] = {};
-    }
-    pool = pool.filter(word => sharedState.unlockedWords[pageNumber][word.id]);
-  }
-
-  return pool;
-}
 
 // --- WebSocket logic ---
 io.on('connection', (socket) => {
-  // Check if sharedState is loaded
   if (!sharedState) {
     socket.emit('error', { message: 'Server is initializing. Please refresh the page.' });
     socket.disconnect();
     return;
   }
 
-  // Initialize user on page 1
   const initialPage = 1;
   sharedState.userPages[socket.id] = initialPage;
-
-  // Check if user is admin (will be set via admin_login event)
   const isAdmin = sharedState.adminUsers[socket.id] || false;
 
-  // Get filtered pool based on admin status
-  const userPool = getFilteredPool(initialPage, isAdmin);
-
-  // Shuffle for this user
-  for (let i = userPool.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [userPool[i], userPool[j]] = [userPool[j], userPool[i]];
-  }
-
-  // Send current state to new client, with the filtered and shuffled pool
   socket.emit('state', {
     title: sharedState.title,
     instructions: sharedState.instructions,
     totalPages: sharedState.totalPages,
     currentPage: initialPage,
     sentences: sharedState.pages[initialPage].sentences,
-    pool: userPool,
+    pool: shuffled(getDedupedPool(initialPage, isAdmin)),
     blanks: sharedState.pages[initialPage].blanks,
+    solution: getSolutionMap(initialPage),
+    unlockedWords: sharedState.unlockedWords[initialPage] || {},
     isAdmin
   });
 
-  // Admin login event
+  // Admin login
   socket.on('admin_login', ({ token }) => {
-    // Simple token validation (in production, verify JWT)
     if (token && token.startsWith('YWRtaW4')) {
       sharedState.adminUsers[socket.id] = true;
-
-      // Send updated state with all words visible
       const currentPage = sharedState.userPages[socket.id];
-      const adminPool = getFilteredPool(currentPage, true);
-
-      // Shuffle for admin
-      for (let i = adminPool.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [adminPool[i], adminPool[j]] = [adminPool[j], adminPool[i]];
-      }
 
       socket.emit('admin_authenticated', {
         isAdmin: true,
-        pool: adminPool,
+        pool: shuffled(getDedupedPool(currentPage, true)),
         unlockedWords: sharedState.unlockedWords[currentPage] || {}
       });
     } else {
@@ -328,222 +273,98 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Admin unlock word event
-  socket.on('admin_unlock_word', ({ wordId }) => {
-    // Verify user is admin
-    if (!sharedState.adminUsers[socket.id]) {
-      return;
-    }
-
+  // Admin unlock single word
+  socket.on('admin_unlock_word', ({ wordText }) => {
+    if (!sharedState.adminUsers[socket.id]) return;
     const pageNumber = sharedState.userPages[socket.id];
+    if (!pageNumber || !sharedState.pages[pageNumber]) return;
 
-    // Validate page number exists
-    if (!pageNumber || !sharedState.pages[pageNumber]) {
-      return;
-    }
+    if (!sharedState.unlockedWords[pageNumber]) sharedState.unlockedWords[pageNumber] = {};
+    sharedState.unlockedWords[pageNumber][wordText] = true;
 
-    // Initialize unlockedWords for this page if not exists
-    if (!sharedState.unlockedWords[pageNumber]) {
-      sharedState.unlockedWords[pageNumber] = {};
-    }
-
-    // Unlock the word
-    sharedState.unlockedWords[pageNumber][wordId] = true;
-
-    // Broadcast to all non-admin users on this page
+    // Send word to non-admin clients on this page
     io.sockets.sockets.forEach(clientSocket => {
       const isClientAdmin = sharedState.adminUsers[clientSocket.id];
       const clientPage = sharedState.userPages[clientSocket.id];
-
-      // Only broadcast if client has a valid page and is on the same page
-      if (!isClientAdmin && clientPage === pageNumber && sharedState.pages[pageNumber]) {
-        const word = sharedState.pages[pageNumber].pool.find(w => w.id === wordId);
-        if (word) {
-          clientSocket.emit('word_unlocked_by_admin', { word });
-        }
+      if (!isClientAdmin && clientPage === pageNumber) {
+        clientSocket.emit('word_unlocked_by_admin', { wordText });
       }
     });
 
-    // Confirm to admin
-    socket.emit('word_unlock_confirmed', { wordId });
+    socket.emit('word_unlock_confirmed', { wordText });
   });
 
   // Admin unlock all words for current page
   socket.on('admin_unlock_all', () => {
     if (!sharedState.adminUsers[socket.id]) return;
-
     const pageNumber = sharedState.userPages[socket.id];
     if (!pageNumber || !sharedState.pages[pageNumber]) return;
 
-    // Initialize unlockedWords for this page if not exists
-    if (!sharedState.unlockedWords[pageNumber]) {
-      sharedState.unlockedWords[pageNumber] = {};
-    }
+    if (!sharedState.unlockedWords[pageNumber]) sharedState.unlockedWords[pageNumber] = {};
 
-    // Unlock all words for this page
     const pagePool = sharedState.pages[pageNumber].pool;
-    pagePool.forEach(word => {
-      sharedState.unlockedWords[pageNumber][word.id] = true;
-    });
+    pagePool.forEach(w => { sharedState.unlockedWords[pageNumber][w.word] = true; });
 
-    // Broadcast all unlocked words to non-admin users on this page
-    const unplacedWords = pagePool.filter(w => !w.placed);
+    const dedupedWords = getDedupedPool(pageNumber, true); // all words, deduped
+
     io.sockets.sockets.forEach(clientSocket => {
       const isClientAdmin = sharedState.adminUsers[clientSocket.id];
       const clientPage = sharedState.userPages[clientSocket.id];
       if (!isClientAdmin && clientPage === pageNumber) {
-        // Send only words not already in their pool
-        clientSocket.emit('all_words_unlocked_by_admin', { words: unplacedWords });
+        clientSocket.emit('all_words_unlocked_by_admin', { words: shuffled(dedupedWords) });
       }
     });
 
-    // Confirm to admin with updated unlockedWords map
     socket.emit('all_words_unlocked', { unlockedWords: sharedState.unlockedWords[pageNumber] });
   });
 
   // Handle page change
   socket.on('change_page', ({ pageNumber }) => {
-    // Validate page number
-    if (!pageNumber || pageNumber < 1 || pageNumber > sharedState.totalPages) {
-      return;
-    }
+    if (!pageNumber || pageNumber < 1 || pageNumber > sharedState.totalPages) return;
 
-    const currentPage = sharedState.userPages[socket.id];
-
-    // Release all locks from current page
-    if (currentPage && sharedState.pages[currentPage]) {
-      sharedState.pages[currentPage].pool.forEach(word => {
-        if (word.lockedBy === socket.id && !word.placed) {
-          word.lockedBy = null;
-          io.emit('word_unlocked', { id: word.id, pageNumber: currentPage });
-        }
-      });
-    }
-
-    // Update user's page
     sharedState.userPages[socket.id] = pageNumber;
-
-    // Get filtered pool based on admin status
     const isAdmin = sharedState.adminUsers[socket.id] || false;
-    const newPagePool = getFilteredPool(pageNumber, isAdmin);
 
-    // Shuffle
-    for (let i = newPagePool.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [newPagePool[i], newPagePool[j]] = [newPagePool[j], newPagePool[i]];
-    }
-
-    // Send new page state
     socket.emit('page_state', {
       pageNumber,
       sentences: sharedState.pages[pageNumber].sentences,
-      pool: newPagePool,
+      pool: shuffled(getDedupedPool(pageNumber, isAdmin)),
       blanks: sharedState.pages[pageNumber].blanks,
+      solution: getSolutionMap(pageNumber),
       totalPages: sharedState.totalPages,
       isAdmin,
       unlockedWords: sharedState.unlockedWords[pageNumber] || {}
     });
   });
 
-  // Word select (lock)
-  socket.on('select_word', ({ id }) => {
-    const pageNumber = sharedState.userPages[socket.id];
-    if (!pageNumber || !sharedState.pages[pageNumber]) return;
-
-    const page = sharedState.pages[pageNumber];
-    const wordToLock = page.pool.find(w => w.id === id);
-
-    // Ensure word exists, is not placed, and is not locked by another user
-    if (!wordToLock || wordToLock.placed || (wordToLock.lockedBy && wordToLock.lockedBy !== socket.id)) {
-      return;
-    }
-
-    // Find and unlock ALL other words locked by this user on this page
-    const previouslyLockedWords = page.pool.filter(w => w.lockedBy === socket.id && w.id !== id);
-    if (previouslyLockedWords.length > 0) {
-      previouslyLockedWords.forEach(word => {
-        word.lockedBy = null;
-        io.emit('word_unlocked', { id: word.id, pageNumber });
-      });
-    }
-
-    // Lock the new word, if it's not already locked by this user
-    if (wordToLock.lockedBy !== socket.id) {
-      wordToLock.lockedBy = socket.id;
-      io.emit('word_locked', { id, by: socket.id, pageNumber });
-    }
-  });
-
-  // Word release (unlock)
-  socket.on('release_word', ({ id }) => {
-    const pageNumber = sharedState.userPages[socket.id];
-    if (!pageNumber || !sharedState.pages[pageNumber]) return;
-
-    const page = sharedState.pages[pageNumber];
-    const word = page.pool.find(w => w.id === id);
-    if (word && word.lockedBy === socket.id && !word.placed) {
-      word.lockedBy = null;
-      io.emit('word_unlocked', { id, pageNumber });
-    }
-  });
-
   // Place word in blank
-  socket.on('place_word', ({ id, blank }) => {
+  socket.on('place_word', ({ wordText, blank }) => {
     const pageNumber = sharedState.userPages[socket.id];
     if (!pageNumber || !sharedState.pages[pageNumber]) return;
 
     const page = sharedState.pages[pageNumber];
-    const word = page.pool.find(w => w.id === id);
-    if (word && word.lockedBy === socket.id && !word.placed) {
-      // Remove any existing word from this blank position
-      const existingWordId = page.blanks[blank];
-      if (existingWordId) {
-        const existingWord = page.pool.find(w => w.id === existingWordId);
-        if (existingWord) {
-          existingWord.placed = false;
-          io.emit('word_removed', { id: existingWordId, pageNumber });
-        }
-      }
 
-      word.placed = true;
-      word.lockedBy = null;
-      page.blanks[blank] = id; // Map blank position to word id
-      io.emit('word_placed', { id, blank, pageNumber });
-    }
+    // Validate: word exists in this page's solution
+    if (!page.pool.some(w => w.word === wordText)) return;
+
+    page.blanks[blank] = wordText;
+    io.emit('word_placed', { wordText, blank, pageNumber });
   });
 
-  // Remove word from blank (return to pool)
-  socket.on('remove_word', ({ id }) => {
+  // Remove word from blank
+  socket.on('remove_word', ({ blank }) => {
     const pageNumber = sharedState.userPages[socket.id];
     if (!pageNumber || !sharedState.pages[pageNumber]) return;
 
     const page = sharedState.pages[pageNumber];
-    const word = page.pool.find(w => w.id === id);
-    if (word && word.placed) {
-      // Find which blank contains this word and clear it
-      for (let blankPos in page.blanks) {
-        if (page.blanks[blankPos] === id) {
-          delete page.blanks[blankPos];
-          break;
-        }
-      }
-      word.placed = false;
-      io.emit('word_removed', { id, pageNumber });
+    if (page.blanks[blank] !== undefined) {
+      delete page.blanks[blank];
+      io.emit('word_removed', { blank, pageNumber });
     }
   });
 
-  // On disconnect, release any locks held by this socket
+  // Disconnect: clean up user tracking
   socket.on('disconnect', () => {
-    const pageNumber = sharedState.userPages[socket.id];
-    if (pageNumber && sharedState.pages[pageNumber]) {
-      sharedState.pages[pageNumber].pool.forEach(word => {
-        if (word.lockedBy === socket.id && !word.placed) {
-          word.lockedBy = null;
-          io.emit('word_unlocked', { id: word.id, pageNumber });
-        }
-      });
-    }
-    // Clean up user page tracking and admin status
     delete sharedState.userPages[socket.id];
     delete sharedState.adminUsers[socket.id];
   });

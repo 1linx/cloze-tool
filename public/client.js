@@ -2,13 +2,13 @@
 (function(){
   const sentencesRoot = document.getElementById('sentences');
   const wordsRoot = document.getElementById('words');
-  let selectedId = null; // for tap-to-select on mobile
+  let selectedWord = null; // word text of selected item (tap-to-select)
 
-  // --- WebSocket setup ---
   let socket = null;
   let wsState = {
-    pool: [],
-    blanks: {},
+    pool: [],        // [{ id: wordText, word: wordText }, ...] deduped
+    blanks: {},      // { "si-ti": wordText }
+    solution: {},    // { "si-ti": wordText } — correct answers
     sentences: [],
     title: '',
     instructions: '',
@@ -20,7 +20,7 @@
   let adminToken = null;
 
   function clearSelection(){
-    selectedId = null;
+    selectedWord = null;
     const prev = document.querySelector('.word-item.selected');
     if(prev) prev.classList.remove('selected');
   }
@@ -37,6 +37,7 @@
       wsState = {
         pool: state.pool,
         blanks: state.blanks,
+        solution: state.solution || {},
         sentences: state.sentences,
         title: state.title,
         instructions: state.instructions,
@@ -46,7 +47,6 @@
         unlockedWords: state.unlockedWords || {}
       };
 
-      // Update dynamic title and instructions
       const titleEl = document.getElementById('app-title');
       const instrEl = document.getElementById('app-instructions');
       if(titleEl && state.title) titleEl.textContent = state.title;
@@ -62,6 +62,7 @@
       wsState.currentPage = pageState.pageNumber;
       wsState.pool = pageState.pool;
       wsState.blanks = pageState.blanks;
+      wsState.solution = pageState.solution || {};
       wsState.sentences = pageState.sentences;
       wsState.totalPages = pageState.totalPages;
       wsState.isAdmin = pageState.isAdmin || wsState.isAdmin;
@@ -88,87 +89,47 @@
       showAdminError('Invalid password');
     });
 
-    // Admin word unlock confirmed
-    socket.on('word_unlock_confirmed', ({ wordId }) => {
-      wsState.unlockedWords[wordId] = true;
+    // Admin: single word unlock confirmed
+    socket.on('word_unlock_confirmed', ({ wordText }) => {
+      wsState.unlockedWords[wordText] = true;
       renderFromState();
     });
 
-    // All words unlocked by admin (bulk)
-    socket.on('all_words_unlocked', ({ unlockedWords }) => {
-      wsState.unlockedWords = unlockedWords;
-      renderFromState();
-    });
-
-    // Non-admin: word unlocked by admin
-    socket.on('word_unlocked_by_admin', ({ word }) => {
-      // Add word to pool
-      wsState.pool.push(word);
+    // Non-admin: single word unlocked by admin
+    socket.on('word_unlocked_by_admin', ({ wordText }) => {
+      if (!wsState.pool.find(w => w.word === wordText)) {
+        wsState.pool.push({ id: wordText, word: wordText });
+      }
       renderFromState();
     });
 
     // Non-admin: all words unlocked by admin
     socket.on('all_words_unlocked_by_admin', ({ words }) => {
       words.forEach(word => {
-        if (!wsState.pool.find(w => w.id === word.id)) {
+        if (!wsState.pool.find(w => w.word === word.word)) {
           wsState.pool.push(word);
         }
       });
       renderFromState();
     });
 
-    socket.on('word_locked', ({ id, by, pageNumber }) => {
-      // Filter by page - only process if it's for the current page
-      if (pageNumber !== wsState.currentPage) return;
-
-      const word = wsState.pool.find(w => w.id === id);
-      if(word){
-        word.lockedBy = by;
-        renderFromState();
-      }
+    // Admin: all words unlocked confirmed
+    socket.on('all_words_unlocked', ({ unlockedWords }) => {
+      wsState.unlockedWords = unlockedWords;
+      renderFromState();
     });
 
-    socket.on('word_unlocked', ({ id, pageNumber }) => {
-      // Filter by page - only process if it's for the current page
+    socket.on('word_placed', ({ wordText, blank, pageNumber }) => {
       if (pageNumber !== wsState.currentPage) return;
-
-      const word = wsState.pool.find(w => w.id === id);
-      if(word){
-        word.lockedBy = null;
-        renderFromState();
-      }
+      wsState.blanks[blank] = wordText;
+      clearSelection();
+      renderFromState();
     });
 
-    socket.on('word_placed', ({ id, blank, pageNumber }) => {
-      // Filter by page - only process if it's for the current page
+    socket.on('word_removed', ({ blank, pageNumber }) => {
       if (pageNumber !== wsState.currentPage) return;
-
-      const word = wsState.pool.find(w => w.id === id);
-      if(word){
-        word.placed = true;
-        word.lockedBy = null;
-        wsState.blanks[blank] = id; // Map blank position to word id
-        clearSelection(); // Deselect after placing
-        renderFromState();
-      }
-    });
-
-    socket.on('word_removed', ({ id, pageNumber }) => {
-      // Filter by page - only process if it's for the current page
-      if (pageNumber !== wsState.currentPage) return;
-
-      const word = wsState.pool.find(w => w.id === id);
-      if(word){
-        word.placed = false;
-        // Remove this word from whichever blank contains it
-        for(let blankPos in wsState.blanks){
-          if(wsState.blanks[blankPos] === id){
-            delete wsState.blanks[blankPos];
-            break;
-          }
-        }
-        renderFromState();
-      }
+      delete wsState.blanks[blank];
+      renderFromState();
     });
 
     socket.on('disconnect', () => {
@@ -177,84 +138,48 @@
 
     socket.on('reset', () => {
       console.log('Exercise reset');
-      // Reset local state
-      wsState.pool.forEach(word => {
-        word.placed = false;
-        word.lockedBy = null;
-      });
       wsState.blanks = {};
       clearSelection();
       renderFromState();
     });
   }
 
-  // --- Utility: check if all blanks are filled correctly ---
+  // --- Check if all blanks are filled correctly ---
   function isComplete(){
-    const sentences = wsState.sentences || [];
-    const pool = wsState.pool || [];
+    const solution = wsState.solution || {};
     const blanks = wsState.blanks || {};
-    let blankCount = 0;
-
-    for(let si = 0; si < sentences.length; si++){
-      const s = sentences[si];
-      for(let ti = 0; ti < s.tokens.length; ti++){
-        if(s.tokens[ti] === null){ // It's a blank
-          blankCount++;
-          const blankPos = `${si}-${ti}`;
-          const wordId = blanks[blankPos];
-          if(!wordId) return false; // Blank not filled
-
-          const placedWord = pool.find(w => w.id === wordId);
-          if(!placedWord) return false; // Should not happen
-
-          // Find the solution word text for this blank
-          const solutionWord = pool.find(p => p.sentenceIndex === si && p.tokenIndex === ti);
-          if (!solutionWord) return false; // Should not happen
-
-          if(placedWord.word !== solutionWord.word){
-            return false; // The text of the placed word doesn't match the solution text for this blank
-          }
-        }
-      }
+    const positions = Object.keys(solution);
+    if (!positions.length) return false;
+    for (const pos of positions) {
+      if (blanks[pos] !== solution[pos]) return false;
     }
-    // If we get here, all blanks are filled and the word texts are correct.
-    // Return true only if there were actually blanks to fill.
-    return blankCount > 0;
+    return true;
   }
 
   // --- Progress message updater ---
   function updateProgressMessage(){
     const messageEl = document.getElementById('message');
-    const blanks = Array.from(document.querySelectorAll('.blank'));
+    const blankEls = Array.from(document.querySelectorAll('.blank'));
 
-    if(!blanks.length){
-      if(messageEl){
-        messageEl.classList.remove('show', 'success', 'error');
-        messageEl.textContent = '';
-      }
+    if(!blankEls.length){
+      if(messageEl) messageEl.classList.remove('show', 'success', 'error');
       return;
     }
 
-    // Check if all blanks are filled
-    const allFilled = blanks.every(b => b.dataset.filledId);
-
     if(messageEl){
+      const allFilled = blankEls.every(b => b.dataset.filledWord);
       if(allFilled){
-        // All blanks are filled - check if correct
         if(isComplete()){
-          // All correct
           messageEl.textContent = 'Complete';
           messageEl.classList.remove('error');
           messageEl.classList.add('show', 'success');
         } else {
-          // All filled but some incorrect
           messageEl.textContent = 'Two or more words are incorrect.';
           messageEl.classList.remove('success');
           messageEl.classList.add('show', 'error');
         }
       } else {
-        // Not all filled yet
-        const emptyCount = blanks.filter(b => !b.dataset.filledId).length;
+        const emptyCount = blankEls.filter(b => !b.dataset.filledWord).length;
         if(emptyCount === 1 || emptyCount === 2){
           messageEl.textContent = 'Almost finished';
           messageEl.classList.remove('success', 'error');
@@ -273,41 +198,23 @@
     e.preventDefault();
     this.classList.remove('dragover');
 
-    const id = e.dataTransfer.getData('text/plain');
-    const item = wsState.pool.find(p=>p.id===id);
-    if(!item) return;
+    const wordText = e.dataTransfer.getData('text/plain');
+    if(!wordText) return;
 
-    // Get blank position
     const si = Number(this.dataset.sentence);
     const ti = Number(this.dataset.token);
     const blank = `${si}-${ti}`;
 
-    // If blank already has a word, return it to pool first
-    const existingId = this.dataset.filledId;
-    if(existingId){
-      socket.emit('remove_word', { id: existingId });
-    }
-
-    // Place this word
-    socket.emit('place_word', { id, blank });
+    socket.emit('place_word', { wordText, blank });
   }
 
-  // --- Place item in blank (for click/tap) ---
-  function placeItemInBlank(item, blankEl){
+  // --- Place item in blank (click/tap) ---
+  function placeItemInBlank(wordText, blankEl){
     if(isComplete()) return;
-
     const si = Number(blankEl.dataset.sentence);
     const ti = Number(blankEl.dataset.token);
     const blank = `${si}-${ti}`;
-
-    // If blank already has a word, return it to pool first
-    const existingId = blankEl.dataset.filledId;
-    if(existingId){
-      socket.emit('remove_word', { id: existingId });
-    }
-
-    // Place this word
-    socket.emit('place_word', { id: item.id, blank });
+    socket.emit('place_word', { wordText, blank });
   }
 
   // --- Render UI from wsState ---
@@ -328,28 +235,25 @@
           span.dataset.sentence = si;
           span.dataset.token = ti;
 
-          // Find which word (if any) is placed in this blank position
           const blankPos = `${si}-${ti}`;
-          const wordId = wsState.blanks[blankPos];
-          const word = wordId ? pool.find(w => w.id === wordId) : null;
+          const wordText = wsState.blanks[blankPos];
 
-          if(word){
-            span.textContent = word.word;
+          if(wordText){
+            span.textContent = wordText;
             span.classList.add('filled');
-            span.dataset.filledId = word.id;
+            span.dataset.filledWord = wordText;
           } else {
             span.textContent = '';
-            delete span.dataset.filledId;
+            delete span.dataset.filledWord;
           }
 
-          // Drag/drop handlers
           if(!isComplete()){
             span.addEventListener('dragover', e=>{ e.preventDefault(); });
             span.addEventListener('dragenter', e=>{
               e.preventDefault();
               span.classList.add('dragover');
             });
-            span.addEventListener('dragleave', e=>{
+            span.addEventListener('dragleave', ()=>{
               span.classList.remove('dragover');
             });
             span.addEventListener('drop', onDropToBlank);
@@ -367,26 +271,24 @@
       sentencesRoot.appendChild(div);
     });
 
-    // Render word bank
+    // Render word bank — deduplicated pool, words always visible
     wordsRoot.innerHTML = '';
     const complete = isComplete();
 
-    pool.forEach(item=>{
-      if(item.placed) return; // skip placed words
-
+    pool.forEach(item => {
       const w = document.createElement('div');
       w.className = 'word-item';
       w.textContent = item.word;
-      w.id = item.id;
+      w.id = `word-${item.word}`;
       w.dataset.word = item.word;
 
-      if(item.id === selectedId){
+      if(item.word === selectedWord){
         w.classList.add('selected');
       }
 
       // Admin mode: mark unlocked words
       if(wsState.isAdmin){
-        const isUnlocked = wsState.unlockedWords[item.id];
+        const isUnlocked = wsState.unlockedWords[item.word];
         if(isUnlocked){
           w.classList.add('admin-unlocked');
           w.title = 'Unlocked for students';
@@ -396,59 +298,45 @@
         }
       }
 
-      const isLocked = item.lockedBy && item.lockedBy !== socket.id;
-      w.draggable = !complete && !isLocked && !wsState.isAdmin;
+      w.draggable = !complete && !wsState.isAdmin;
 
-      if(isLocked){
-        w.classList.add('locked');
-        w.title = 'Word is being used by another user';
-      }
-
-      if(!complete && !isLocked){
-        // Admin mode: click to unlock
+      if(!complete){
         if(wsState.isAdmin){
           w.addEventListener('click', e=>{
             e.preventDefault();
-            const isUnlocked = wsState.unlockedWords[item.id];
-            if(!isUnlocked){
-              socket.emit('admin_unlock_word', { wordId: item.id });
+            if(!wsState.unlockedWords[item.word]){
+              socket.emit('admin_unlock_word', { wordText: item.word });
             }
           });
         } else {
-          // Regular user mode: drag and select
           // Drag start
           w.addEventListener('dragstart', e=>{
-            socket.emit('select_word', { id: item.id });
-            e.dataTransfer.setData('text/plain', item.id);
+            e.dataTransfer.setData('text/plain', item.word);
             e.dataTransfer.effectAllowed = 'move';
           });
 
           // Click to select
           w.addEventListener('click', e=>{
             e.preventDefault();
-            if(selectedId === item.id){
-              socket.emit('release_word', { id: item.id });
+            if(selectedWord === item.word){
               clearSelection();
               return;
             }
             clearSelection();
-            selectedId = item.id;
+            selectedWord = item.word;
             w.classList.add('selected');
-            socket.emit('select_word', { id: item.id });
           });
 
           // Touch to select
           w.addEventListener('touchstart', e=>{
             e.preventDefault();
-            if(selectedId === item.id){
-              socket.emit('release_word', { id: item.id });
+            if(selectedWord === item.word){
               clearSelection();
               return;
             }
             clearSelection();
-            selectedId = item.id;
+            selectedWord = item.word;
             w.classList.add('selected');
-            socket.emit('select_word', { id: item.id });
           }, {passive:false});
         }
       }
@@ -459,42 +347,28 @@
     updateProgressMessage();
   }
 
-  // --- Make wordbank droppable so users can drag words back ---
+  // --- Wordbank drop: no-op (words always stay in bank) ---
   const wordbank = document.getElementById('wordbank');
   wordbank.addEventListener('dragover', e=>e.preventDefault());
-  wordbank.addEventListener('drop', e=>{
-    if(isComplete()) return;
-    e.preventDefault();
+  wordbank.addEventListener('drop', e=>{ e.preventDefault(); });
 
-    const id = e.dataTransfer.getData('text/plain');
-    const item = wsState.pool.find(p=>p.id===id);
-    if(!item) return;
-
-    // If the word was placed in a blank, remove it
-    if(item.placed){
-      socket.emit('remove_word', { id });
-    }
-  });
-
-  // --- Allow clicking a blank ---
+  // --- Click a blank to place selected word or clear it ---
   document.addEventListener('click', e=>{
     if(isComplete()) return;
     const b = e.target.closest('.blank');
     if(!b) return;
 
-    if(selectedId){
-      // Place the selected word here
-      const item = wsState.pool.find(p=>p.id===selectedId);
-      if(item){
-        placeItemInBlank(item, b);
-      }
+    if(selectedWord){
+      placeItemInBlank(selectedWord, b);
+      clearSelection();
       return;
     }
 
-    // No selection: if blank filled, return word to bank
-    if(b.dataset.filledId){
-      const id = b.dataset.filledId;
-      socket.emit('remove_word', { id });
+    // No selection: if blank filled, clear it
+    if(b.dataset.filledWord){
+      const si = b.dataset.sentence;
+      const ti = b.dataset.token;
+      socket.emit('remove_word', { blank: `${si}-${ti}` });
     }
   });
 
@@ -504,13 +378,8 @@
     resetBtn.addEventListener('click', async () => {
       if(confirm('Reset the exercise? This will clear all placements for all users.')){
         try {
-          const response = await fetch('/api/reset', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' }
-          });
-          if(!response.ok){
-            console.error('Failed to reset');
-          }
+          const response = await fetch('/api/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+          if(!response.ok) console.error('Failed to reset');
         } catch(err){
           console.error('Error resetting:', err);
         }
@@ -518,7 +387,7 @@
     });
   }
 
-  // --- Page navigation functions ---
+  // --- Page navigation ---
   function initPageNavigation() {
     const prevBtn = document.getElementById('prevPageBtn');
     const nextBtn = document.getElementById('nextPageBtn');
@@ -544,21 +413,12 @@
     const prevBtn = document.getElementById('prevPageBtn');
     const nextBtn = document.getElementById('nextPageBtn');
     const indicator = document.getElementById('page-indicator');
-
-    if (prevBtn) {
-      prevBtn.disabled = wsState.currentPage <= 1;
-    }
-
-    if (nextBtn) {
-      nextBtn.disabled = wsState.currentPage >= wsState.totalPages;
-    }
-
-    if (indicator) {
-      indicator.textContent = `Page ${wsState.currentPage} of ${wsState.totalPages}`;
-    }
+    if (prevBtn) prevBtn.disabled = wsState.currentPage <= 1;
+    if (nextBtn) nextBtn.disabled = wsState.currentPage >= wsState.totalPages;
+    if (indicator) indicator.textContent = `Page ${wsState.currentPage} of ${wsState.totalPages}`;
   }
 
-  // --- Admin UI functions ---
+  // --- Admin UI ---
   function updateAdminUI() {
     const adminIndicator = document.getElementById('adminModeIndicator');
     const adminBtn = document.getElementById('adminBtn');
@@ -583,10 +443,7 @@
     const passwordInput = document.getElementById('adminPassword');
     const errorDiv = document.getElementById('adminError');
     if (modal) modal.style.display = 'flex';
-    if (passwordInput) {
-      passwordInput.value = '';
-      passwordInput.focus();
-    }
+    if (passwordInput) { passwordInput.value = ''; passwordInput.focus(); }
     if (errorDiv) errorDiv.textContent = '';
   }
 
@@ -603,11 +460,7 @@
   async function handleAdminLogin() {
     const passwordInput = document.getElementById('adminPassword');
     const password = passwordInput ? passwordInput.value : '';
-
-    if (!password) {
-      showAdminError('Please enter a password');
-      return;
-    }
+    if (!password) { showAdminError('Please enter a password'); return; }
 
     try {
       const response = await fetch('/api/admin/login', {
@@ -615,12 +468,9 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password })
       });
-
       const data = await response.json();
-
       if (response.ok && data.success) {
         adminToken = data.token;
-        // Send token to socket
         socket.emit('admin_login', { token: data.token });
       } else {
         showAdminError(data.error || 'Login failed');
@@ -631,32 +481,24 @@
     }
   }
 
-  // --- Admin button handlers ---
+  // Admin button handlers
   const adminBtn = document.getElementById('adminBtn');
-  if (adminBtn) {
-    adminBtn.addEventListener('click', showAdminModal);
-  }
+  if (adminBtn) adminBtn.addEventListener('click', showAdminModal);
 
   const adminLoginBtn = document.getElementById('adminLoginBtn');
-  if (adminLoginBtn) {
-    adminLoginBtn.addEventListener('click', handleAdminLogin);
-  }
+  if (adminLoginBtn) adminLoginBtn.addEventListener('click', handleAdminLogin);
 
   const adminCancelBtn = document.getElementById('adminCancelBtn');
-  if (adminCancelBtn) {
-    adminCancelBtn.addEventListener('click', hideAdminModal);
-  }
+  if (adminCancelBtn) adminCancelBtn.addEventListener('click', hideAdminModal);
 
   const adminPassword = document.getElementById('adminPassword');
   if (adminPassword) {
     adminPassword.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') {
-        handleAdminLogin();
-      }
+      if (e.key === 'Enter') handleAdminLogin();
     });
   }
 
-  // --- Unlock All button handler (admin only) ---
+  // Unlock All button (admin only)
   const unlockAllBtn = document.getElementById('unlockAllBtn');
   if (unlockAllBtn) {
     unlockAllBtn.addEventListener('click', () => {
