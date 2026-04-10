@@ -94,10 +94,26 @@
       renderFromState();
     });
 
+    // All words unlocked by admin (bulk)
+    socket.on('all_words_unlocked', ({ unlockedWords }) => {
+      wsState.unlockedWords = unlockedWords;
+      renderFromState();
+    });
+
     // Non-admin: word unlocked by admin
     socket.on('word_unlocked_by_admin', ({ word }) => {
       // Add word to pool
       wsState.pool.push(word);
+      renderFromState();
+    });
+
+    // Non-admin: all words unlocked by admin
+    socket.on('all_words_unlocked_by_admin', ({ words }) => {
+      words.forEach(word => {
+        if (!wsState.pool.find(w => w.id === word.id)) {
+          wsState.pool.push(word);
+        }
+      });
       renderFromState();
     });
 
@@ -547,15 +563,18 @@
     const adminIndicator = document.getElementById('adminModeIndicator');
     const adminBtn = document.getElementById('adminBtn');
     const resetBtn = document.getElementById('resetBtn');
+    const unlockAllBtn = document.getElementById('unlockAllBtn');
 
     if (wsState.isAdmin) {
       if (adminIndicator) adminIndicator.style.display = 'flex';
       if (adminBtn) adminBtn.style.display = 'none';
       if (resetBtn) resetBtn.style.display = 'inline-block';
+      if (unlockAllBtn) unlockAllBtn.style.display = 'block';
     } else {
       if (adminIndicator) adminIndicator.style.display = 'none';
       if (adminBtn) adminBtn.style.display = 'inline-block';
       if (resetBtn) resetBtn.style.display = 'none';
+      if (unlockAllBtn) unlockAllBtn.style.display = 'none';
     }
   }
 
@@ -634,6 +653,14 @@
       if (e.key === 'Enter') {
         handleAdminLogin();
       }
+    });
+  }
+
+  // --- Unlock All button handler (admin only) ---
+  const unlockAllBtn = document.getElementById('unlockAllBtn');
+  if (unlockAllBtn) {
+    unlockAllBtn.addEventListener('click', () => {
+      socket.emit('admin_unlock_all');
     });
   }
 

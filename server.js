@@ -368,6 +368,39 @@ io.on('connection', (socket) => {
     socket.emit('word_unlock_confirmed', { wordId });
   });
 
+  // Admin unlock all words for current page
+  socket.on('admin_unlock_all', () => {
+    if (!sharedState.adminUsers[socket.id]) return;
+
+    const pageNumber = sharedState.userPages[socket.id];
+    if (!pageNumber || !sharedState.pages[pageNumber]) return;
+
+    // Initialize unlockedWords for this page if not exists
+    if (!sharedState.unlockedWords[pageNumber]) {
+      sharedState.unlockedWords[pageNumber] = {};
+    }
+
+    // Unlock all words for this page
+    const pagePool = sharedState.pages[pageNumber].pool;
+    pagePool.forEach(word => {
+      sharedState.unlockedWords[pageNumber][word.id] = true;
+    });
+
+    // Broadcast all unlocked words to non-admin users on this page
+    const unplacedWords = pagePool.filter(w => !w.placed);
+    io.sockets.sockets.forEach(clientSocket => {
+      const isClientAdmin = sharedState.adminUsers[clientSocket.id];
+      const clientPage = sharedState.userPages[clientSocket.id];
+      if (!isClientAdmin && clientPage === pageNumber) {
+        // Send only words not already in their pool
+        clientSocket.emit('all_words_unlocked_by_admin', { words: unplacedWords });
+      }
+    });
+
+    // Confirm to admin with updated unlockedWords map
+    socket.emit('all_words_unlocked', { unlockedWords: sharedState.unlockedWords[pageNumber] });
+  });
+
   // Handle page change
   socket.on('change_page', ({ pageNumber }) => {
     // Validate page number
