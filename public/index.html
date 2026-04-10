@@ -4,9 +4,13 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Drag & Drop Blanks — Idol Tool</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Special+Elite&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
+    <div class="page-sheet">
     <header>
       <h1 id="app-title">Fill the blanks</h1>
       <p id="app-instructions">Drag words from the side panel into the rectangular blanks.</p>
@@ -56,6 +60,8 @@
     <footer class="page-footer">
       <button id="adminBtn" class="admin-btn-subtle">Admin Login</button>
     </footer>
+
+    </div><!-- /.page-sheet -->
 
     <script src="/socket.io/socket.io.js"></script>
     <script src="/client.js"></script>
