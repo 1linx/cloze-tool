@@ -44,9 +44,9 @@ app.post('/api/reset', async (_req, res) => {
 
   io.sockets.sockets.forEach(socket => {
     sharedState.userPages[socket.id] = 1;
+    sharedState.userBlanks[socket.id] = {};
     const pageToSend = 1;
     const isAdmin = sharedState.adminUsers[socket.id] || false;
-    const userPool = shuffled(getDedupedPool(pageToSend, isAdmin));
 
     socket.emit('state', {
       title: sharedState.title,
@@ -54,8 +54,8 @@ app.post('/api/reset', async (_req, res) => {
       totalPages: sharedState.totalPages,
       currentPage: pageToSend,
       sentences: sharedState.pages[pageToSend].sentences,
-      pool: userPool,
-      blanks: sharedState.pages[pageToSend].blanks,
+      pool: shuffled(getDedupedPool(pageToSend, isAdmin)),
+      blanks: {},
       solution: getSolutionMap(pageToSend),
       unlockedWords: sharedState.unlockedWords[pageToSend] || {},
       isAdmin
@@ -114,7 +114,6 @@ async function loadSharedState() {
     const pageNumber = parseInt(pageNum);
     const sentences = [];
     const pool = [];
-    const blanks = {};
 
     sentenceTexts.forEach((line, si) => {
       const tokens = [];
@@ -138,7 +137,7 @@ async function loadSharedState() {
       sentences.push({ tokens });
     });
 
-    pages[pageNumber] = { sentences, pool, blanks };
+    pages[pageNumber] = { sentences, pool };
   });
 
   return {
@@ -147,6 +146,7 @@ async function loadSharedState() {
     totalPages,
     pages,
     userPages: {},
+    userBlanks: {}, // { socketId: { pageNum: { "si-ti": wordText } } }
     adminUsers: {},
     unlockedWords: {} // { pageNum: { wordText: true } }
   };
@@ -242,6 +242,7 @@ io.on('connection', (socket) => {
 
   const initialPage = 1;
   sharedState.userPages[socket.id] = initialPage;
+  sharedState.userBlanks[socket.id] = {};
   const isAdmin = sharedState.adminUsers[socket.id] || false;
 
   socket.emit('state', {
@@ -251,7 +252,7 @@ io.on('connection', (socket) => {
     currentPage: initialPage,
     sentences: sharedState.pages[initialPage].sentences,
     pool: shuffled(getDedupedPool(initialPage, isAdmin)),
-    blanks: sharedState.pages[initialPage].blanks,
+    blanks: sharedState.userBlanks[socket.id][initialPage] || {},
     solution: getSolutionMap(initialPage),
     unlockedWords: sharedState.unlockedWords[initialPage] || {},
     isAdmin
@@ -329,7 +330,7 @@ io.on('connection', (socket) => {
       pageNumber,
       sentences: sharedState.pages[pageNumber].sentences,
       pool: shuffled(getDedupedPool(pageNumber, isAdmin)),
-      blanks: sharedState.pages[pageNumber].blanks,
+      blanks: (sharedState.userBlanks[socket.id] || {})[pageNumber] || {},
       solution: getSolutionMap(pageNumber),
       totalPages: sharedState.totalPages,
       isAdmin,
@@ -342,13 +343,13 @@ io.on('connection', (socket) => {
     const pageNumber = sharedState.userPages[socket.id];
     if (!pageNumber || !sharedState.pages[pageNumber]) return;
 
-    const page = sharedState.pages[pageNumber];
-
     // Validate: word exists in this page's solution
-    if (!page.pool.some(w => w.word === wordText)) return;
+    if (!sharedState.pages[pageNumber].pool.some(w => w.word === wordText)) return;
 
-    page.blanks[blank] = wordText;
-    io.emit('word_placed', { wordText, blank, pageNumber });
+    if (!sharedState.userBlanks[socket.id]) sharedState.userBlanks[socket.id] = {};
+    if (!sharedState.userBlanks[socket.id][pageNumber]) sharedState.userBlanks[socket.id][pageNumber] = {};
+    sharedState.userBlanks[socket.id][pageNumber][blank] = wordText;
+    socket.emit('word_placed', { wordText, blank, pageNumber });
   });
 
   // Remove word from blank
@@ -356,16 +357,17 @@ io.on('connection', (socket) => {
     const pageNumber = sharedState.userPages[socket.id];
     if (!pageNumber || !sharedState.pages[pageNumber]) return;
 
-    const page = sharedState.pages[pageNumber];
-    if (page.blanks[blank] !== undefined) {
-      delete page.blanks[blank];
-      io.emit('word_removed', { blank, pageNumber });
+    const userBlanks = (sharedState.userBlanks[socket.id] || {})[pageNumber] || {};
+    if (userBlanks[blank] !== undefined) {
+      delete sharedState.userBlanks[socket.id][pageNumber][blank];
+      socket.emit('word_removed', { blank, pageNumber });
     }
   });
 
   // Disconnect: clean up user tracking
   socket.on('disconnect', () => {
     delete sharedState.userPages[socket.id];
+    delete sharedState.userBlanks[socket.id];
     delete sharedState.adminUsers[socket.id];
   });
 });
