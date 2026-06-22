@@ -13,6 +13,14 @@ const PORT = process.env.PORT || 3000;
 const supabase = require('./lib/supabaseClient');
 
 app.use(express.json());
+
+// Defense-in-depth: explicitly forbid access to dotfiles (.env, .git, etc.)
+// regardless of how static serving is configured.
+app.use((req, res, next) => {
+  if (/(^|\/)\.(env|git)/.test(req.path)) return res.status(403).end();
+  next();
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // A small health endpoint
